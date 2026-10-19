@@ -1,3 +1,5 @@
+> **Community 3.0.0 Global fork.** Based on [HuangZhuoRui/LocationSpoofer](https://github.com/HuangZhuoRui/LocationSpoofer). The application ID is `com.suseoaa.locationspoofer.fork`. Public APKs contain no personal map API keys; enter your own AMap Android SDK key in map settings and restart the app.
+
 <div align="center">
 
 <h1>LocationSpoofer</h1>
@@ -210,17 +212,18 @@ The global scheme hooks system services directly, and their internals differ bet
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/LocationSpoofer.git
+git clone https://github.com/jiankangw59-blip/LocationSpoofer.git
 
-# 2. Build and install Debug APK
-./gradlew installDebug
+# 2. Build and install the global arm64 APK
+./gradlew :app:assembleGlobalDebug
+adb install -r app/build/outputs/apk/global/debug/app-global-arm64-v8a-debug.apk
 ```
 
 ### 2. Activation
 1. Open **KernelSU / APatch / Magisk** and grant Root permissions to LocationSpoofer.
 2. Open **LSPosed Manager**, find **LocationSpoofer**, and **enable it**.
-3. Under the module's scope, **check the target apps** you wish to spoof (e.g. WeChat, DingTalk, XuexiTong, Baidu Maps).
-4. **Force stop** target apps or reboot your phone to apply the hooks.
+3. In the module scope, enable **System Framework (system), Phone (com.android.phone), and Bluetooth (com.android.bluetooth)** rather than selecting target apps individually.
+4. Reboot to load the global hooks in system processes. Do not enable another global LocationSpoofer module at the same time.
 
 ### 3. Usage Scenarios
 

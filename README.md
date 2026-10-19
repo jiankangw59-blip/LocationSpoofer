@@ -219,17 +219,18 @@
 
 ```bash
 # 1. 克隆代码仓库
-git clone https://github.com/your-username/LocationSpoofer.git
+git clone https://github.com/jiankangw59-blip/LocationSpoofer.git
 
-# 2. 编译 Debug APK 并直接安装到设备
-./gradlew installDebug
+# 2. 编译并安装全局版 arm64 APK
+./gradlew :app:assembleGlobalDebug
+adb install -r app/build/outputs/apk/global/debug/app-global-arm64-v8a-debug.apk
 ```
 
 ### 2. 权限与激活
 1. 打开 **KernelSU / APatch / Magisk** 管理器，授予 LocationSpoofer **Root 权限**。
 2. 打开 **LSPosed** 管理器，在模块列表中找到 **LocationSpoofer** 并启用。
-3. 在模块的作用域（Scope）中，**勾选需要进行定位伪装的目标应用**（如微信、企业微信、钉钉、超星学习通、百度地图、高德地图等）。
-4. **强行停止**勾选的目标 App（或重启手机）以使其加载 Hook 逻辑。
+3. 在模块的作用域（Scope）中，勾选**系统框架（system）、电话（com.android.phone）、蓝牙（com.android.bluetooth）**，不要按 scoped 版说明逐个勾选目标应用。
+4. 重启手机，使系统进程加载全局 Hook；不要同时启用原版的全局模块。
 
 ### 3. 常见场景
 
