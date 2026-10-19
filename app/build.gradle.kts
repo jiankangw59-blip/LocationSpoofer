@@ -1,23 +1,17 @@
+@file:Suppress("DEPRECATION")
+
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
-    alias(libs.plugins.ksp)
-    kotlin("plugin.serialization") version "2.0.21"
-    alias(libs.plugins.jetbrains.compose.compiler)
+    alias(libs.plugins.jetbrains.kotlin.compose)
 }
 
-val androidMinSdkVersion: Int by rootProject.extra
-val androidTargetSdkVersion: Int by rootProject.extra
-val androidCompileSdkVersion: Int by rootProject.extra
-val androidApplicationId: String by rootProject.extra
-val androidVersionName: String by rootProject.extra
-val androidVersionCode: Int by rootProject.extra
-
 android {
-    namespace = "com.suseoaa.locationspoofer"
-    compileSdk = androidCompileSdkVersion
+    namespace = "com.vincenthzr.locationspoofer"
+    compileSdk = 37
 
     fun getLocalConfig(key: String): String? {
         val localYml = file("../local.yml")
@@ -34,37 +28,14 @@ android {
     val googleMapsApiKey =
         System.getenv("GOOGLE_MAPS_API_KEY") ?: getLocalConfig("GOOGLE_MAPS_API_KEY") ?: ""
     val amapApiKey = System.getenv("AMAP_API_KEY") ?: getLocalConfig("AMAP_API_KEY") ?: ""
-    val baiduMapApiKey = System.getenv("BAIDU_MAP_API_KEY") ?: getLocalConfig("BAIDU_MAP_API_KEY") ?: ""
-
-    fun getSigningConfig(key: String): String? {
-        val properties = Properties()
-        val keystorePropertiesFile = rootProject.file("keystore.properties")
-        if (keystorePropertiesFile.exists()) {
-            try {
-                properties.load(keystorePropertiesFile.inputStream())
-                return properties.getProperty(key)
-            } catch (e: Exception) {
-                println("Warning: 无法加载 keystore.properties 文件: ${e.message}")
-            }
-        }
-        return null
-    }
-
-    splits {
-        abi {
-            isEnable = true           // 启用 ABI 拆分
-            reset()                   // 清除默认配置
-            include("arm64-v8a")      // 只生成 arm64-v8a 架构
-            isUniversalApk = false    // 不生成通用 APK
-        }
-    }
 
     defaultConfig {
-        applicationId = androidApplicationId
-        minSdk = androidMinSdkVersion
-        targetSdk = androidTargetSdkVersion
-        versionCode = androidVersionCode
-        versionName = androidVersionName
+        applicationId = "com.suseoaa.locationspoofer.fork"
+        testInstrumentationRunner = "com.vincenthzr.locationspoofer.SystemFilesInstrumentation"
+        minSdk = 26
+        targetSdk = 37
+        versionCode = providers.gradleProperty("APP_VERSION_CODE").get().toInt()
+        versionName = providers.gradleProperty("APP_VERSION_NAME").get()
 
         vectorDrawables {
             useSupportLibrary = true
@@ -72,34 +43,61 @@ android {
 
         manifestPlaceholders["googleMapsApiKey"] = googleMapsApiKey
         manifestPlaceholders["amapApiKey"] = amapApiKey
-        manifestPlaceholders["baiduMapApiKey"] = baiduMapApiKey
 
-        buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"$googleMapsApiKey\"")
+        splits {
+            abi {
+                isEnable = true
+                reset()
+                include("arm64-v8a", "armeabi-v7a")
+                isUniversalApk = false
+            }
+        }
     }
 
+    // 模拟方案维度：scoped = 在 LSPosed 作用域里的目标 App 进程内 Hook；global = Hook system_server 等系统进程，对全设备生效。
+    // app / app-ui / core-data / xposed 四个模块必须声明完全相同的维度与 flavor，否则变体无法对齐。
+    flavorDimensions += "scheme"
+    productFlavors {
+        create("scoped") {
+            dimension = "scheme"
+            buildConfigField("boolean", "GLOBAL_SCHEME", "false")
+        }
+        create("global") {
+            dimension = "scheme"
+            buildConfigField("boolean", "GLOBAL_SCHEME", "true")
+        }
+    }
+
+    // CI 用环境变量（见 .github/workflows/release.yml），本地用仓库根目录的 keystore.properties（已被 gitignore）
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    fun signingValue(env: String, prop: String): String? =
+        System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(prop)?.takeIf { it.isNotBlank() }
+
+    val keystorePath = signingValue("KEYSTORE_FILE_PATH", "storeFile")
+    val hasReleaseKeystore = keystorePath != null && file(keystorePath).exists()
+
     signingConfigs {
-        val storeFilePath = getSigningConfig("storeFile").toString()
-        val storePassword = getSigningConfig("storePassword")
-        val keyAlias = getSigningConfig("keyAlias")
-        val keyPassword = getSigningConfig("keyPassword")
-        val hasSigning = rootProject.file(storeFilePath).exists() && storePassword != null && keyAlias != null && keyPassword != null
-        if (hasSigning) {
-            create("release") {
-                this.storeFile = rootProject.file(storeFilePath)
-                this.storePassword = storePassword
-                this.keyAlias = keyAlias
-                this.keyPassword = keyPassword
-				enableV1Signing = false
-                enableV2Signing = true
-                enableV3Signing = true
-                enableV4Signing = false
+        create("release") {
+            if (hasReleaseKeystore) {
+                storeFile = file(keystorePath!!)
+                storePassword = signingValue("KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signingValue("KEY_ALIAS", "keyAlias")
+                keyPassword = signingValue("KEY_PASSWORD", "keyPassword")
             }
+            // v3 为以后的密钥轮换（lineage）预留；API 26–27 设备仍按 v2 校验，所以 v2 保持开启
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.findByName("release")
+            // 没配置发布密钥时回退到 debug 签名，保证新克隆仓库的人也能直接编译调试
+            signingConfig = signingConfigs.getByName(if (hasReleaseKeystore) "release" else "debug")
+            buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"$googleMapsApiKey\"")
         }
         release {
             isMinifyEnabled = true
@@ -108,19 +106,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.findByName("release")
+            signingConfig = signingConfigs.getByName("release")
+            buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"$googleMapsApiKey\"")
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-Xskip-metadata-version-check",
-            "-opt-in=kotlinx.serialization.InternalSerializationApi"
-        )
     }
     buildFeatures {
         compose = true
@@ -133,26 +125,30 @@ android {
     }
 }
 
-base {
-    archivesName.set(
-        "LocationSpoofer_v${androidVersionName}_${androidVersionCode}"
-    )
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+        freeCompilerArgs.addAll(
+            "-Xskip-metadata-version-check"
+        )
+    }
 }
 
 dependencies {
-    compileOnly(libs.xposed.api)
+    implementation(project(":core-geo"))
+    implementation(project(":core-data"))
+    implementation(project(":service"))
+    implementation(project(":app-ui"))
+    // 纯打包依赖：:app 不直接调用 :xposed 的代码，只是需要把它的产物
+    // （LocationHooker 及 META-INF/xposed/* 资源）一起打进最终 APK，供 LSPosed 扫描加载。
+    implementation(project(":xposed"))
+
     implementation(libs.xposed.service)
     implementation(libs.koin.androidx.compose)
     implementation(libs.amap.map)
     implementation(libs.amap.search)
     implementation(libs.baidu.map)
-    implementation(libs.baidu.location)
-    implementation(libs.baidu.search)
-    implementation(libs.google.maps)
     implementation(libs.google.places)
-    implementation(libs.kotlinx.serialization.json)
-    implementation(libs.play.services.location)
-    implementation(libs.okhttp)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -164,18 +160,11 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
-    implementation(libs.material.kolor)
 
-    // Room
-    implementation(libs.room.runtime)
-    implementation(libs.room.ktx)
-    ksp(libs.room.compiler)
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.blur)
 
     debugImplementation(libs.androidx.ui.tooling)
-}
-
-tasks.configureEach {
-    if (name.contains("AarMetadata")) {
-        enabled = false
-    }
+    androidTestImplementation(libs.room.runtime)
+    androidTestImplementation(libs.room.ktx)
 }

@@ -1,19 +1,16 @@
 # ─── Local ───────────────────────────────────────────────
 *.DS_Store
-.opencode
-.claude
 .idea/
 *.iml
-AGENTS.md
 local.properties
 local.yml
 
 # ─── Gradle ──────────────────────────────────────────────
 .gradle/
+.kotlin/
 build/
 app/build/
 **/build/
-gradle-wrapper.jar
 
 # ─── NDK ─────────────────────────────────────────────────
 .cxx/
@@ -38,6 +35,12 @@ google-services.json
 
 # ─── Builds / Outputs ────────────────────────────────────
 app/release/
+# 引入 scheme 变体后，Android Studio"生成签名 APK"按变体输出到这两个目录
+app/global/
+app/scoped/
 
 # Local Gradle user home/cache
 .gradle-home/
+
+# Custom Gradle Home
+.gradle_home/

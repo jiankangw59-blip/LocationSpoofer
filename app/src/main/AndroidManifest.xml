@@ -2,11 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
+
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION" tools:ignore="MockLocation,ProtectedPermissions" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -20,13 +27,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".LocationApp"
         android:allowBackup="true"
-        android:icon="@mipmap/icon"
-        android:label="LocationSpoofer"
-        android:roundIcon="@mipmap/icon"
+        android:icon="@android:drawable/ic_menu_mylocation"
+        android:label="LocationSpoofer Global"
+        android:roundIcon="@android:drawable/ic_menu_mylocation"
         android:supportsRtl="true"
         android:enableOnBackInvokedCallback="true"
         android:description="@string/app_description"
@@ -35,20 +43,19 @@
         <meta-data
             android:name="com.amap.api.v2.apikey"
             android:value="${amapApiKey}" />
-
-        <meta-data
-            android:name="com.baidu.lbsapi.API_KEY"
-            android:value="${baiduMapApiKey}" />
-
+        
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${googleMapsApiKey}" />
+
+        <meta-data
+            android:name="com.baidu.lbsapi.API_KEY"
+            android:value="" />
         
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:supportsPictureInPicture="true"
-            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
             <intent-filter>
@@ -57,20 +64,6 @@
             </intent-filter>
         </activity>
         <service android:name="com.amap.api.location.APSService" />
-        <service
-            android:name=".service.SpoofingService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-        <service
-            android:name=".service.FloatingJoystickService"
-            android:enabled="true"
-            android:exported="false" />
-
-        <provider
-            android:name=".provider.SpooferProvider"
-            android:authorities="${applicationId}.provider"
-            android:exported="true" />
     </application>
 
 </manifest>
