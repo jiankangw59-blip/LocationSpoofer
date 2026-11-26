@@ -110,10 +110,15 @@ internal fun Instrumentation.verifyModuleRuntime(verifyConfigStatus: Boolean = f
 }
 
 /** Exercises actual API 102 generation replacement, preserving scope and simulation payload. */
-internal fun Instrumentation.verifyModuleHotReload(activeProbeOnly: Boolean = false, runId: String? = null): Bundle {
+internal fun Instrumentation.verifyModuleHotReload(
+    activeProbeOnly: Boolean = false,
+    runId: String? = null,
+    preserveState: Boolean = false
+): Bundle {
     val output = Bundle()
     try {
         runBlocking {
+            check(!preserveState || !activeProbeOnly)
             val service = moduleService()
             check(BuildConfig.GLOBAL_SCHEME && service.apiVersion >= 102)
             val scope = service.scope.sorted()
@@ -123,9 +128,19 @@ internal fun Instrumentation.verifyModuleHotReload(activeProbeOnly: Boolean = fa
                 "Unexpected targets: $pids"
             }
             val preferences = service.getRemotePreferences(FrameworkConfigChannel.GROUP)
+            val preservedSnapshot = if (preserveState) {
+                checkNotNull(preferences.getString(FrameworkConfigChannel.SNAPSHOT_KEY, null)) {
+                    "No framework configuration snapshot to preserve"
+                }
+            } else null
+            val preservedSnapshotId = preservedSnapshot?.let { JSONObject(it).getString("id") }
             suspend fun expectedSnapshotId(): String {
                 val snapshot = if (activeProbeOnly) withFixtureConfig(runId) { it.requireCurrent().snapshot }
                     else preferences.getString(FrameworkConfigChannel.SNAPSHOT_KEY, null)
+                if (preservedSnapshotId != null) {
+                    check(snapshot == preservedSnapshot) { "Configuration snapshot changed during hot reload" }
+                    return preservedSnapshotId
+                }
                 val envelope = JSONObject(checkNotNull(snapshot))
                 check(envelope.optString("file").isEmpty())
                 val payload = JSONObject(envelope.getString("payload"))
@@ -151,9 +166,17 @@ internal fun Instrumentation.verifyModuleHotReload(activeProbeOnly: Boolean = fa
             var baseline = reports()
             repeat(2) { cycle ->
                 for (target in service.runningTargets) {
+                    if (preserveState) expectedSnapshotId()
                     val completion = CompletableDeferred<HotReloadResult>()
                     service.hotReloadModule(target, null) { _, result -> completion.complete(result) }
-                    val result = withTimeout(30_000) { completion.await() }
+                    val result = withTimeout(30_000) {
+                        while (preserveState && !completion.isCompleted) {
+                            expectedSnapshotId()
+                            delay(250)
+                        }
+                        completion.await()
+                    }
+                    if (preserveState) expectedSnapshotId()
                     check(result.status() == HotReloadResult.Status.SUCCEEDED) {
                         "${target.processName}: ${result.status()} ${result.message()}"
                     }
@@ -185,6 +208,7 @@ internal fun Instrumentation.verifyModuleHotReload(activeProbeOnly: Boolean = fa
                 output.putString("cycle_${cycle + 1}", "All three generations replaced; hooks intact; latest configuration received; PIDs unchanged")
                 baseline = verified
             }
+            if (preserveState) output.putString("preserved_snapshot_id", expectedSnapshotId())
             output.putString("pids", pids.toString())
             output.putString("scope", scope.joinToString())
         }

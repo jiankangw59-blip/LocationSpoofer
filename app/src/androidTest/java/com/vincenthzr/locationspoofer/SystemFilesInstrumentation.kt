@@ -18,6 +18,7 @@ class SystemFilesInstrumentation : Instrumentation() {
     private var verifyConfigStatus = false
     private var moduleHotReload = false
     private var moduleHotReloadActive = false
+    private var moduleHotReloadPreserveState = false
     private var remoteWifiQuery = false
     private var remoteCellQuery = false
     private var remoteWifiMetadata = false
@@ -76,7 +77,9 @@ class SystemFilesInstrumentation : Instrumentation() {
         moduleRuntime = arguments?.getString("check") == "module-runtime"
         verifyConfigStatus = arguments?.getString("check") == "module-config-status"
         moduleHotReloadActive = arguments?.getString("check") == "module-hot-reload-active-probe"
-        moduleHotReload = arguments?.getString("check") == "module-hot-reload" || moduleHotReloadActive
+        moduleHotReloadPreserveState = arguments?.getString("check") == "module-hot-reload-preserve-state"
+        moduleHotReload = arguments?.getString("check") == "module-hot-reload" ||
+            moduleHotReloadActive || moduleHotReloadPreserveState
         remoteWifiQuery = arguments?.getString("check") == "remote-wifi-query"
         remoteCellQuery = arguments?.getString("check") == "remote-cell-query"
         remoteWifiMetadata = arguments?.getString("check") == "remote-wifi-metadata"
@@ -234,7 +237,7 @@ class SystemFilesInstrumentation : Instrumentation() {
             return
         }
         if (moduleHotReload) {
-            val output = verifyModuleHotReload(moduleHotReloadActive, fixtureRunId)
+            val output = verifyModuleHotReload(moduleHotReloadActive, fixtureRunId, moduleHotReloadPreserveState)
             finish(if (output.getString("result") == "PASS") -1 else 0, output)
             return
         }
