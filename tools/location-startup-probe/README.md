@@ -10,7 +10,9 @@ com.codex.locationstartup +
 2. 结束应用进程，再从启动器打开「定位启动诊断」。已有权限时，应用在 `Application.attachBaseContext` 完成基础 Context 安装后启动记录器，以 attach 入口为冷启动会话起点。离开前台或点击「停止记录」会结束会话。
 3. 记录结束后，点击「复制当前报告」。记录过程中复制会在剪贴板内容中标注未结束快照。
 
-应用分别记录 `getLastKnownLocation` 缓存、普通 `LocationListener` 回调，以及 GPS 和 network 各一次 `getCurrentLocation`。单次请求也可能返回缓存。启动与首次窗口焦点各有一段最多 40 个 50 毫秒时点的缓存采样，两个窗口共享重合的读取。记录器跳过已经错过的时点，并标出迟到的 SDK 返回。首个焦点未观察到时，页面窗口也未覆盖。
+应用分别记录 `getLastKnownLocation` 缓存、普通 `LocationListener` 回调，以及 GPS 和 network 各一次 `getCurrentLocation`。1.4（versionCode 5）同时对 SDK 枚举中的 fused provider 记录这三种路径。SDK 未列出 fused 时会记作未覆盖。单次请求也可能返回缓存。启动与首次窗口焦点各有一段最多 40 个 50 毫秒时点的缓存采样，两个窗口共享重合的读取。记录器跳过已经错过的时点，并标出迟到的 SDK 返回。首个焦点未观察到时，页面窗口也未覆盖。
+
+1.4 同时记录前台 NMEA 监听的登记、移除和 SDK 返回的原始句子及时间。支持的句型会附带校验和、fix 状态与解析到的坐标，空结果、无有效 fix、校验失败和未经支持的句型各自保留。NMEA 记录也可能含坐标，和其他原始报告一样仅在本地处理。
 
 从桌面返回时，如果进程仍在且上一会话已结束，应用以 `Activity.onStart` 为暖启动起点。若进程仍在但页面需要重建，则以 `Activity.onCreate` 为暖启动起点。冷启动、暖启动和手动记录都最多持续 30 秒。手动结束后，当前页的焦点变化不会开启新会话。
 

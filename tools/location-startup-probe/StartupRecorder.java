@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.location.OnNmeaMessageListener;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.Handler;
@@ -43,11 +44,14 @@ final class StartupRecorder {
     private static final long BURST_STEP_NS = 50 * MS;
     private static final int BURST_SLOTS = 40;
     private static final int MAX_EVENTS = 4096;
-    private static final int CLEANUP_RESERVE = 8;
+    private static final int CLEANUP_RESERVE = 10;
     private static final int MAX_REPORTS = 20;
     private static final long MAX_CLIPBOARD_BYTES = 300_000;
     private static final String[] PROVIDERS = {LocationManager.GPS_PROVIDER,
-        LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER};
+        LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER, LocationManager.FUSED_PROVIDER};
+    private static final String[] CURRENT_PROVIDERS = {
+        LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.FUSED_PROVIDER
+    };
 
     record Stamp(long wallMs, long elapsedNs) {
         static Stamp now() { return new Stamp(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos()); }
@@ -249,6 +253,7 @@ final class StartupRecorder {
         emit(session, "registration_checkpoint", Stamp.now(), json("receiver_ready", session.receiver != null,
             "listeners_ready", session.registrationCount, "listeners_attempted", session.listeners.size()));
         requestCurrentLocations(session, available);
+        registerNmea(session);
         String initialPhase = entryEvent == null ? "startup" : entryEvent;
         state(session, initialPhase, available);
         session.initialLocationEnabled = session.locationEnabled;
@@ -332,6 +337,15 @@ final class StartupRecorder {
         Set<String> result = readSdk(session, "all_providers", phase, null,
             () -> new LinkedHashSet<>(session.manager.getAllProviders()));
         if (result != null) session.knownProviders = result;
+        if (!session.fusedAbsenceReported && (result == null || !result.contains(LocationManager.FUSED_PROVIDER))) {
+            Stamp received = Stamp.now();
+            if (capturing(session, received)) {
+                session.fusedAbsenceReported = true;
+                emit(session, "fused_provider_unavailable", received, json("phase", phase,
+                    "requested_provider", LocationManager.FUSED_PROVIDER,
+                    "reason", result == null ? "provider_list_unavailable" : "not_listed"));
+            }
+        }
         return result;
     }
 
@@ -487,7 +501,7 @@ final class StartupRecorder {
 
     private void requestCurrentLocations(Session session, Set<String> available) {
         if (available == null) return;
-        for (String provider : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+        for (String provider : CURRENT_PROVIDERS) {
             if (!available.contains(provider)) continue;
             Stamp begin = Stamp.now();
             if (!capturing(session, begin)) return;
@@ -515,6 +529,45 @@ final class StartupRecorder {
                 sdkFailure(session, "get_current_location", "startup", provider, begin, error);
             }
         }
+    }
+
+    private void registerNmea(Session session) {
+        if (!capturing(session, Stamp.now())) return;
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            nmeaLifecycle(session, "nmea_registration", null, "permission_missing", null, null);
+            return;
+        }
+        OnNmeaMessageListener listener = (sentence, timestamp) -> {
+            Stamp received = Stamp.now();
+            if (!capturing(session, received)) return;
+            try {
+                if (emit(session, "nmea_sentence", received, NmeaSnapshot.snapshot(sentence, timestamp))) {
+                    session.nmeaCount++;
+                }
+            } catch (RuntimeException error) {
+                failure(session, "nmea_callback", null, error);
+            }
+        };
+        Stamp begin = Stamp.now();
+        if (!capturing(session, begin)) return;
+        try {
+            boolean registered = session.manager.addNmeaListener(session.handler::post, listener);
+            if (registered) session.nmeaListener = listener;
+            nmeaLifecycle(session, "nmea_registration", begin,
+                registered ? "registered" : "not_registered", registered, null);
+        } catch (RuntimeException error) {
+            nmeaLifecycle(session, "nmea_registration", begin, "error", null, error);
+        }
+    }
+
+    private void nmeaLifecycle(Session session, String event, Stamp begin, String result,
+                               Boolean returned, RuntimeException error) {
+        Stamp end = Stamp.now();
+        if (error != null) session.errors++;
+        JSONObject data = json("result", result, "sdk_attempted", begin != null, "sdk_return", returned,
+            "exception_class", error == null ? null : error.getClass().getName());
+        if (begin != null) timing(data, begin, end);
+        emit(session, event, end, data);
     }
 
     private void location(Session session, Location value, Stamp received, JSONObject data, int source) {
@@ -570,6 +623,16 @@ final class StartupRecorder {
             } catch (RuntimeException error) { failure(session, "remove_location_updates", entry.getKey(), error); }
         }
         session.listeners.clear();
+        if (session.nmeaListener != null) {
+            Stamp begin = Stamp.now();
+            try {
+                session.manager.removeNmeaListener(session.nmeaListener);
+                nmeaLifecycle(session, "nmea_removal", begin, "removed", null, null);
+            } catch (RuntimeException error) {
+                nmeaLifecycle(session, "nmea_removal", begin, "error", null, error);
+            }
+            session.nmeaListener = null;
+        }
         if (session.receiver != null) {
             try {
                 context.unregisterReceiver(session.receiver);
@@ -578,6 +641,7 @@ final class StartupRecorder {
             session.receiver = null;
         }
         session.complete = emit(session, "session_end", requested, json("reason", reason, "errors", session.errors,
+            "nmea_sentence_count", session.nmeaCount,
             "cached_windows", counts(session.cached), "callback_windows", counts(session.callbacks),
             "current_location_windows", counts(session.currentLocations),
             "focus_windows", session.firstFocusNs == 0 ? null : json("cache", counts(session.focusWindows[0]),
@@ -758,6 +822,9 @@ final class StartupRecorder {
         File file;
         BufferedWriter writer;
         LocationManager manager;
+        OnNmeaMessageListener nmeaListener;
+        int nmeaCount;
+        boolean fusedAbsenceReported;
         Runnable timeout;
         Burst entryBurst;
         Burst focusBurst;
