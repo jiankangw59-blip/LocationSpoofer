@@ -21,6 +21,7 @@ public final class MainActivity extends Activity {
     private final long owner = SystemClock.elapsedRealtimeNanos();
     private final Runnable observer = this::render;
     private StartupRecorder recorder;
+    private boolean autoRecord;
     private boolean visible;
     private String notice = "准备阶段。请先授予定位权限，再重新冷启动进行正式记录。";
     private TextView status;
@@ -36,15 +37,20 @@ public final class MainActivity extends Activity {
         StartupRecorder.Stamp entered = StartupRecorder.Stamp.now();
         super.onCreate(saved);
         recorder = ((StartupApplication) getApplication()).recorder();
-        recorder.mark(owner, "activity_on_create", entered, null, true);
-        if (recorder.hasPermission()) notice = "";
+        autoRecord = recorder.hasPermission();
+        if (autoRecord) {
+            recorder.ensureActiveSession(owner, "activity_on_create", "warm_activity_create", entered);
+            notice = "";
+        }
         createUi();
         render();
     }
 
     @Override protected void onStart() {
+        StartupRecorder.Stamp entered = StartupRecorder.Stamp.now();
         super.onStart();
         visible = true;
+        if (autoRecord) recorder.ensureActiveSession(owner, "activity_start", "warm_foreground", entered);
         recorder.observe(observer);
     }
 
@@ -151,7 +157,7 @@ public final class MainActivity extends Activity {
                 : "首次页面焦点 · 启动锚点后 " + value.firstFocusDelayMs() + " ms\n"
                     + windows(value.focusWindows()[0], value.focusWindows()[1], value.focusWindows()[2]);
             summary.setText("定位开关（SDK 读数）" + sdkState + " · 异常 " + value.errors() + "\n\n"
-                + "会话起点（冷启动为 Application attach 入口）\n"
+                + sessionOrigin(value.trigger()) + "\n"
                 + windows(value.cached(), value.callbacks(), value.currentLocations()) + "\n首个普通监听回调 "
                 + firstCallback + "\n\n" + focus + "\n\n" + value.coverage() + "\n\n首条定位\n"
                 + fallback(value.first()) + "\n最新定位\n" + fallback(value.latest()));
@@ -166,6 +172,15 @@ public final class MainActivity extends Activity {
         stopButton.setEnabled(value.running());
         copyButton.setText(value.complete() ? "复制当前报告" : "复制未结束快照");
         copyButton.setEnabled(value.file() != null && value.count() > 0);
+    }
+
+    private static String sessionOrigin(String trigger) {
+        return switch (trigger) {
+            case "application_attach" -> "冷启动 · 从 Application attach 入口计时";
+            case "warm_activity_create" -> "暖启动重建页面 · 从 Activity.onCreate 入口计时";
+            case "warm_foreground" -> "暖启动回到前台 · 从 Activity.onStart 入口计时";
+            default -> "手动记录 · 从点击时间计时";
+        };
     }
 
     private static String windows(int[] cache, int[] callback, int[] current) {

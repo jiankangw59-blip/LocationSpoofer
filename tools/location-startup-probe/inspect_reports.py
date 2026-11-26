@@ -180,7 +180,7 @@ def sdk_timings(rows, issue):
 def burst_slots(rows, issue):
     known = {
         anchor: {"origin_ns": None, "dispatched": set(), "shared": set(), "missed": set()}
-        for anchor in ("attach", "window_focus")
+        for anchor in ("attach", "session_start", "window_focus")
     }
     dispatched_timestamps = set()
     provider_misses = defaultdict(list)
@@ -502,7 +502,21 @@ def self_test():
         end(),
     ], shared_slot)
 
-    print(json.dumps({"synthetic_checks": 7, "passed": True}))
+    def warm_anchor(result):
+        assert result["integrity"]["status"] == "COMPLETE"
+        assert result["samples_by_anchor"]["attach"]["windows"] is None
+        assert result["burst_slots"]["attach"]["anchor_elapsed_ns"] is None
+        assert result["burst_slots"]["session_start"]["dispatched_slots"] == [0]
+        assert result["samples_at_session_start"]["0_200_ms"]["cache"] == 1
+
+    check("warm-session-start-anchor", [
+        dict(start(), trigger="warm_foreground", attach_entry_elapsed_ns=zero - 500 * MS),
+        record("burst_slot", 14, burst_anchor="session_start", burst_origin_elapsed_ns=zero,
+               nominal_elapsed_ns=zero, slot=0),
+        record("location", 20, origin="cache", burst_anchor="session_start", slot=0), end(),
+    ], warm_anchor)
+
+    print(json.dumps({"synthetic_checks": 8, "passed": True}))
     return 0
 
 

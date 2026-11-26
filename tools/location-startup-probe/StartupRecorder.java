@@ -55,17 +55,18 @@ final class StartupRecorder {
         static Stamp now() { return new Stamp(System.currentTimeMillis(), SystemClock.elapsedRealtimeNanos()); }
     }
 
-    record ViewState(boolean running, boolean complete, String file, String reason, String fileError,
+    record ViewState(boolean running, boolean complete, String file, String reason, String fileError, String trigger,
                      Integer locationEnabled, int count, int errors, int[] cached, int[] callbacks,
                      int[] currentLocations, long firstCallbackMs, long firstFocusDelayMs,
                      int[][] focusWindows, String first, String latest, String coverage) {
         static ViewState preparing() {
-            return new ViewState(false, false, null, null, null, null, 0, 0, new int[3], new int[3],
+            return new ViewState(false, false, null, null, null, null, null, 0, 0, new int[3], new int[3],
                 new int[3], -1, -1, new int[3][3], null, null, "准备阶段 · 无启动采样");
         }
     }
 
     record Copy(String label, String data, boolean complete, String error) {}
+    private record StopRequest(long owner, long elapsedNs) {}
 
     private final Context context;
     private final Stamp attachEntry;
@@ -78,6 +79,7 @@ final class StartupRecorder {
     private volatile Session current;
     private volatile ViewState view = ViewState.preparing();
     private volatile long declaredOwner;
+    private volatile StopRequest latestStop;
     private Runnable observer;
     private boolean uiUpdatePending;
 
@@ -101,40 +103,62 @@ final class StartupRecorder {
 
     void begin(String trigger, long owner, Stamp origin) {
         if (!hasPermission()) return;
+        if (owner != 0) declaredOwner = owner;
         Session active = current;
         if (active != null && active.owner == owner) active.stopCutoffNs = origin.elapsedNs;
         enqueue(true, handler -> {
             Session previous = current;
             if (previous != null && previous.running) finish(previous, "manual_restart", origin);
-            startOnWorker(new Session(handler, trigger, owner, origin));
+            startOnWorker(new Session(handler, trigger, owner, origin), null);
+        });
+    }
+
+    void ensureActiveSession(long owner, String event, String trigger, Stamp stamp) {
+        if (!hasPermission()) return;
+        declaredOwner = owner;
+        enqueue(true, handler -> {
+            if (declaredOwner != owner) return;
+            Session session = current;
+            if (session != null && session.running && stamp.elapsedNs >= session.deadline) {
+                finish(session, "duration_elapsed", stamp);
+            }
+            if (session == null || !session.running) {
+                startOnWorker(new Session(handler, trigger, owner, stamp), event);
+                return;
+            }
+            if (session.owner != owner) {
+                if (session.owner != 0) session.stopCutoffNs = Long.MAX_VALUE;
+                session.owner = owner;
+                applyLatestStop(session);
+            }
+            recordLifecycle(session, owner, event, stamp, null, true);
         });
     }
 
     void mark(long owner, String event, Stamp stamp, Boolean focused, boolean cache) {
-        if (event.equals("activity_on_create")) declaredOwner = owner;
-        enqueue(false, handler -> {
-            Session session = current;
-            if (!capturing(session, stamp)) return;
-            if (event.equals("activity_on_create") && session.owner == 0) session.owner = owner;
-            if (owner != 0 && session.owner != owner) return;
-            boolean firstFocus = Boolean.TRUE.equals(focused) && session.firstFocusNs == 0;
-            if (firstFocus) {
-                session.firstFocusNs = stamp.elapsedNs;
-                for (Observation observation : session.observations) countFocus(session, observation);
-                session.observations.clear();
-            }
-            emit(session, event, stamp, json("focused", focused));
-            if (cache) {
-                Set<String> providers = state(session, event);
-                registerAvailable(session, providers, event);
-                readCache(session, providers, event, null, -1);
-            }
-            if (firstFocus) session.focusBurst = startBurst(session, "window_focus", stamp.elapsedNs);
-            publish(session);
-        });
+        enqueue(false, handler -> recordLifecycle(current, owner, event, stamp, focused, cache));
+    }
+
+    private void recordLifecycle(Session session, long owner, String event, Stamp stamp, Boolean focused, boolean cache) {
+        if (session == null || (owner != 0 && session.owner != owner) || !capturing(session, stamp)) return;
+        boolean firstFocus = Boolean.TRUE.equals(focused) && session.firstFocusNs == 0;
+        if (firstFocus) {
+            session.firstFocusNs = stamp.elapsedNs;
+            for (Observation observation : session.observations) countFocus(session, observation);
+            session.observations.clear();
+        }
+        emit(session, event, stamp, json("focused", focused));
+        if (cache) {
+            Set<String> providers = state(session, event);
+            registerAvailable(session, providers, event);
+            readCache(session, providers, event, null, -1);
+        }
+        if (firstFocus) session.focusBurst = startBurst(session, "window_focus", stamp.elapsedNs);
+        publish(session);
     }
 
     void stop(long owner, String reason, String event, Stamp stamp) {
+        if (owner == declaredOwner) latestStop = new StopRequest(owner, stamp.elapsedNs);
         Session active = current;
         if (active != null && (active.owner == owner || (active.owner == 0 && owner == declaredOwner))) {
             active.stopCutoffNs = stamp.elapsedNs;
@@ -184,8 +208,9 @@ final class StartupRecorder {
         }
     }
 
-    private void startOnWorker(Session session) {
+    private void startOnWorker(Session session, String entryEvent) {
         current = session;
+        applyLatestStop(session);
         File directory = new File(context.getFilesDir(), "location-startup");
         try {
             if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Cannot create report directory");
@@ -200,7 +225,7 @@ final class StartupRecorder {
             return;
         }
         session.running = true;
-        session.timeout = () -> finish(session, "duration_elapsed", Stamp.now());
+        session.timeout = () -> onTimeout(session);
         postAt(session, session.timeout, session.deadline);
         emit(session, "session_start", session.origin, json("trigger", session.trigger, "event_limit", MAX_EVENTS,
             "duration_ms", 30000, "deadline_elapsed_realtime_ns", session.deadline, "package", context.getPackageName(),
@@ -209,6 +234,7 @@ final class StartupRecorder {
             "attach_entry_wall_ms", attachEntry.wallMs, "attach_context_ready_elapsed_ns", attachReady.elapsedNs,
             "fine_permission", granted(Manifest.permission.ACCESS_FINE_LOCATION),
             "coarse_permission", granted(Manifest.permission.ACCESS_COARSE_LOCATION)));
+        if (entryEvent != null) emit(session, entryEvent, session.origin, json("focused", null));
         publish(session);
         if (!capturing(session, Stamp.now())) return;
         session.manager = readSdk(session, "location_service", "startup", null,
@@ -220,20 +246,42 @@ final class StartupRecorder {
         }
         registerReceiver(session);
         Set<String> available = providers(session, "startup");
+        readCache(session, available, "initial_cache_before_registration", null, -1);
         registerAvailable(session, available, "startup");
         emit(session, "registration_checkpoint", Stamp.now(), json("receiver_ready", session.receiver != null,
             "listeners_ready", session.registrationCount, "listeners_attempted", session.listeners.size()));
         requestCurrentLocations(session, available);
-        state(session, "startup", available);
-        readCache(session, available, "startup", null, -1);
-        session.attachBurst = startBurst(session, "attach", session.origin.elapsedNs);
+        String initialPhase = entryEvent == null ? "startup" : entryEvent;
+        state(session, initialPhase, available);
+        session.initialLocationEnabled = session.locationEnabled;
+        readCache(session, available, initialPhase, null, -1);
+        String anchor = session.trigger.equals("application_attach") ? "attach" : "session_start";
+        session.entryBurst = startBurst(session, anchor, session.origin.elapsedNs);
         retainReports(session, directory);
         publish(session);
+    }
+
+    private void applyLatestStop(Session session) {
+        StopRequest stop = latestStop;
+        if (stop != null && stop.elapsedNs >= session.origin.elapsedNs
+                && (stop.owner == session.owner || (session.owner == 0 && stop.owner == declaredOwner))) {
+            session.stopCutoffNs = Math.min(session.stopCutoffNs, stop.elapsedNs);
+        }
     }
 
     private static void postAt(Session session, Runnable task, long elapsedNs) {
         long remaining = Math.max(0L, elapsedNs - SystemClock.elapsedRealtimeNanos());
         session.handler.postDelayed(task, (remaining + MS - 1) / MS);
+    }
+
+    private void onTimeout(Session session) {
+        if (!session.running) return;
+        Stamp now = Stamp.now();
+        if (now.elapsedNs < session.deadline) {
+            postAt(session, session.timeout, session.deadline);
+            return;
+        }
+        finish(session, "duration_elapsed", now);
     }
 
     private Burst startBurst(Session session, String anchor, long origin) {
@@ -296,7 +344,6 @@ final class StartupRecorder {
     private Set<String> state(Session session, String phase, Set<String> known) {
         if (!capturing(session, Stamp.now())) return known;
         Boolean enabled = readSdk(session, "location_enabled", phase, null, session.manager::isLocationEnabled);
-        if (phase.equals("startup")) session.initialLocationEnabled = enabled;
         session.locationEnabled = enabled;
         Set<String> names = new LinkedHashSet<>(Arrays.asList(PROVIDERS));
         if (known != null) names.addAll(known);
@@ -546,7 +593,7 @@ final class StartupRecorder {
         session.running = false;
         session.reason = reason;
         session.handler.removeCallbacks(session.timeout);
-        if (session.attachBurst != null) session.handler.removeCallbacks(session.attachBurst.task);
+        if (session.entryBurst != null) session.handler.removeCallbacks(session.entryBurst.task);
         if (session.focusBurst != null) session.handler.removeCallbacks(session.focusBurst.task);
         for (Map.Entry<String, CancellationSignal> request : session.requests.entrySet()) {
             try {
@@ -611,13 +658,13 @@ final class StartupRecorder {
     }
 
     private static int missedSlots(Session session) {
-        return (session.attachBurst == null ? 0 : session.attachBurst.missed)
+        return (session.entryBurst == null ? 0 : session.entryBurst.missed)
             + (session.focusBurst == null ? 0 : session.focusBurst.missed);
     }
 
     private void publish(Session session) {
         view = new ViewState(session.running, session.complete, session.file == null ? null : session.file.getName(),
-            session.reason, session.fileError, session.locationEnabled == null ? null : session.locationEnabled ? 1 : 0,
+            session.reason, session.fileError, session.trigger, session.locationEnabled == null ? null : session.locationEnabled ? 1 : 0,
             session.count, session.errors, session.cached.clone(), session.callbacks.clone(),
             session.currentLocations.clone(), session.firstCallbackNs < 0 ? -1 : session.firstCallbackNs / MS,
             session.firstFocusNs == 0 ? -1 : (session.firstFocusNs - session.origin.elapsedNs) / MS,
@@ -754,7 +801,7 @@ final class StartupRecorder {
         BufferedWriter writer;
         LocationManager manager;
         Runnable timeout;
-        Burst attachBurst;
+        Burst entryBurst;
         Burst focusBurst;
         BroadcastReceiver receiver;
         Set<String> knownProviders;
