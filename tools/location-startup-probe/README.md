@@ -24,6 +24,15 @@ com.codex.locationstartup +
 adb shell run-as com.codex.locationstartup ls files/location-startup
 ```
 
+1.2 版（versionCode 3）支持以下两条前台诊断命令。发送方需要 `android.permission.DUMP`，且应用页面可见并持有窗口焦点。第一条读取本应用的 FINE/COARSE 权限及当前 AppOps 原始和常规返回值，将 PID、UID、调用时间和异常类型保存为私有目录下的 `policy-*.json`，独立保留最近 20 份。第二条与「重新记录 30 秒」使用同一录制入口，新会话标记为 `control_restart`。
+
+```sh
+adb shell am broadcast -a com.codex.locationstartup.CAPTURE_POLICY -p com.codex.locationstartup
+adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.codex.locationstartup
+```
+
+第一条成功时返回策略快照文件名，第二条返回 `restart_requested`。该结果只确认已请求重录，实际登记与回调以新会话和系统定位服务记录为准。策略快照不调用 AppOps note 或修改权限、定位开关与 Thanox 设置。
+
 未收到定位不代表无泄漏，mock 字段也不能单独判断定位来源。未出现 `session_end` 的报告属于未完成采样。报告包含原始坐标，请按需分享。
 
 CI 构建使用 JDK 21 和 Android SDK 36。将 `PROBE_UNSIGNED` 设为 `1` 后执行 `python tools/location-startup-probe/build.py`，生成已对齐的 `location-startup-probe-unsigned.apk`。通过 `BUILD_TOOLS_VERSION` 选择已安装的 Build Tools。脚本输出 APK 路径、签名状态和 SHA-256。默认构建使用本地 debug keystore 签名，也可通过 `LOCATION_STARTUP_PROBE_KEYSTORE` 指定原 debug keystore 路径以保留更新身份。

@@ -2,27 +2,74 @@ package com.codex.locationstartup;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PersistableBundle;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.io.IOException;
+import org.json.JSONException;
 
 public final class MainActivity extends Activity {
     private static final int LOCATION_PERMISSION_REQUEST = 1;
+    private static final String TAG = "LocationStartupProbe";
+    private static final String CAPTURE_POLICY = "com.codex.locationstartup.CAPTURE_POLICY";
+    private static final String RESTART_RECORDING = "com.codex.locationstartup.RESTART_RECORDING";
     private final long owner = SystemClock.elapsedRealtimeNanos();
     private final Runnable observer = this::render;
+    private final BroadcastReceiver controlReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            StartupRecorder.Stamp received = StartupRecorder.Stamp.now();
+            String action = intent.getAction();
+            if (!CAPTURE_POLICY.equals(action) && !RESTART_RECORDING.equals(action)) return;
+            if (!visible || !hasWindowFocus()) {
+                reply(RESULT_CANCELED, "not_foreground");
+                return;
+            }
+            try {
+                if (CAPTURE_POLICY.equals(action)) {
+                    String file = PolicyCapture.write(MainActivity.this, received);
+                    notice = "权限状态已记录 · " + file;
+                    render();
+                    reply(RESULT_OK, file);
+                } else if (recorder.hasPermission()) {
+                    restartRecording("control_restart", received);
+                    reply(RESULT_OK, "restart_requested");
+                } else {
+                    reply(RESULT_CANCELED, "location_permission_missing");
+                }
+            } catch (IOException | JSONException | RuntimeException failure) {
+                notice = "诊断命令失败 · " + failure.getClass().getName();
+                render();
+                reply(RESULT_CANCELED, failure.getClass().getName());
+            }
+        }
+
+        private void reply(int result, String detail) {
+            if (isOrderedBroadcast()) {
+                setResultCode(result);
+                setResultData(detail);
+            }
+            Log.i(TAG, "Control result " + result + " " + detail);
+        }
+    };
     private StartupRecorder recorder;
     private boolean autoRecord;
     private boolean visible;
+    private boolean controlRegistered;
     private String notice = "准备阶段。请先授予定位权限，再重新冷启动进行正式记录。";
     private TextView status;
     private TextView summary;
@@ -52,6 +99,7 @@ public final class MainActivity extends Activity {
         visible = true;
         if (autoRecord) recorder.ensureActiveSession(owner, "activity_start", "warm_foreground", entered);
         recorder.observe(observer);
+        registerControlReceiver();
     }
 
     @Override protected void onResume() {
@@ -73,10 +121,35 @@ public final class MainActivity extends Activity {
 
     @Override protected void onStop() {
         visible = false;
+        if (controlRegistered) {
+            controlRegistered = false;
+            try {
+                unregisterReceiver(controlReceiver);
+            } catch (IllegalArgumentException failure) {
+                Log.w(TAG, "Control receiver cleanup " + failure.getClass().getName());
+            }
+        }
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         recorder.unobserve(observer);
         recorder.stop(owner, "left_foreground", "activity_stop", StartupRecorder.Stamp.now());
         super.onStop();
+    }
+
+    private void registerControlReceiver() {
+        IntentFilter filter = new IntentFilter(CAPTURE_POLICY);
+        filter.addAction(RESTART_RECORDING);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(controlReceiver, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(controlReceiver, filter, Manifest.permission.DUMP, null);
+            }
+            controlRegistered = true;
+        } catch (RuntimeException failure) {
+            notice = "诊断命令登记失败 · " + failure.getClass().getName();
+            Log.w(TAG, "Control receiver registration " + failure.getClass().getName());
+            render();
+        }
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
@@ -106,18 +179,21 @@ public final class MainActivity extends Activity {
         pkg.setTextIsSelectable(true);
         permissionButton = addButton(content, "授予定位权限", () -> requestPermissions(new String[]{
             Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST));
-        restartButton = addButton(content, "重新记录 30 秒", () -> {
-            StartupRecorder.Stamp entry = StartupRecorder.Stamp.now();
-            recorder.begin("manual", owner, entry);
-            recorder.mark(owner, "activity_window_focus", entry, hasWindowFocus(), false);
-            notice = "手动记录，时间窗口从本次点击开始。";
-            render();
-        });
+        restartButton = addButton(content, "重新记录 30 秒",
+            () -> restartRecording("manual", StartupRecorder.Stamp.now()));
         stopButton = addButton(content, "停止记录", () -> recorder.stop(owner, "manual_stop", null, StartupRecorder.Stamp.now()));
         copyButton = addButton(content, "复制当前报告", this::copyReport);
         noticeView = addText(content, "", 14);
         addText(content, "未收到定位不代表无泄漏，mock 字段不是判定真实的充分依据。\n报告含定位坐标，请按需分享。最多保留最近 20 份报告。", 14);
         setContentView(scroll);
+    }
+
+    private void restartRecording(String trigger, StartupRecorder.Stamp entry) {
+        recorder.begin(trigger, owner, entry);
+        recorder.mark(owner, "activity_window_focus", entry, hasWindowFocus(), false);
+        notice = "control_restart".equals(trigger) ? "已请求重新记录，时间窗口从接收诊断命令开始。"
+            : "手动记录，时间窗口从本次点击开始。";
+        render();
     }
 
     private TextView addText(LinearLayout parent, String text, int size) {
@@ -179,6 +255,7 @@ public final class MainActivity extends Activity {
             case "application_attach" -> "冷启动 · 从 Application attach 入口计时";
             case "warm_activity_create" -> "暖启动重建页面 · 从 Activity.onCreate 入口计时";
             case "warm_foreground" -> "暖启动回到前台 · 从 Activity.onStart 入口计时";
+            case "control_restart" -> "诊断命令重新记录 · 从接收命令计时";
             default -> "手动记录 · 从点击时间计时";
         };
     }
