@@ -73,8 +73,9 @@ private var locationDemandChanged: (() -> Unit)? = null
 private var locationDemandTimer: DemandTimer? = null
 private var nativeSignalGate: NativeSignalGate? = null
 private var rawGnssDelivery: RawGnssDelivery? = null
-private val nmeaAltitudeResolverLock = Any()
-@Volatile private var nmeaAltitudeResolver: NmeaAltitudeResolver? = null
+private val geoidAltitudeResolverLock = Any()
+@Volatile private var geoidAltitudeResolver: NmeaAltitudeResolver? = null
+private var geoidAltitudeResolverUnavailable = false
 
 private val nativeLocationRegistrationLock = Any()
 private val activeListenerBinders =
@@ -217,7 +218,7 @@ private fun LocationHooker.registerSignalCallback(chain: XposedInterface.Chain, 
                 val altitude = RouteEngine.realisticAltitude(config)
                 val accuracy = getJitteredAccuracy()
                 val lines = if (usesColorOsNmeaModel()) {
-                    val reference = nmeaAltitudeResolver?.cached(motion.lat, motion.lng, altitude)
+                    val reference = geoidAltitudeResolver?.cached(motion.lat, motion.lng, altitude)
                     if (retiringGeneration || readConfig() !== config) return@runCatching
                     buildModelNmeaSentences(motion, reference, accuracy, config, now)
                 } else buildMockNmeaSentences(motion, altitude, accuracy, config)
@@ -293,7 +294,7 @@ internal fun clearSystemLocationReloadState() {
     rawGnssDelivery = null
     locationDemandTimer?.close()
     locationDemandTimer = null
-    clearNmeaAltitudeResolver()
+    clearGeoidAltitudeResolver()
     isHeartbeatTimerStarted = false
     activeListenerBinders.clear()
     activeGnssStatusBinders.clear()
@@ -516,7 +517,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                         }
                         if (nmeas == null) {
                             nowMs = System.currentTimeMillis()
-                            val reference = resolveNmeaAltitudeOnWorker(config, motion, altitude)
+                            val reference = resolveGeoidAltitudeOnWorker(config, motion, altitude)
                             if (retiringGeneration || readConfig() !== config) return@demandTimer
                             nmeas = buildModelNmeaSentences(motion, reference, accuracy, config, nowMs)
                         }
@@ -550,7 +551,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
         output.setRequired(wanted)
     }
     observeConfigChanges {
-        if (readConfig()?.optBoolean("active", false) != true) clearNmeaAltitudeResolver()
+        if (readConfig()?.optBoolean("active", false) != true) clearGeoidAltitudeResolver()
         nativeSignalGate?.refresh()
         reconcileNativeSignals()
     }
@@ -641,36 +642,53 @@ private fun LocationHooker.buildMockNmeaSentences(
 
 private fun usesColorOsNmeaModel(): Boolean = VendorRegistry.active === ColorOs16Vendor
 
-private fun clearNmeaAltitudeResolver() = synchronized(nmeaAltitudeResolverLock) {
-    nmeaAltitudeResolver = null
+private fun clearGeoidAltitudeResolver() = synchronized(geoidAltitudeResolverLock) {
+    geoidAltitudeResolver = null
+    geoidAltitudeResolverUnavailable = false
 }
 
-private fun LocationHooker.resolveNmeaAltitudeOnWorker(
+internal fun cachedGeoidAltitudeForLocation(
+    permissionLevel: Int?,
+    latitude: Double,
+    longitude: Double,
+    ellipsoidMeters: Double
+): NmeaAltitude? = geoidAltitudeResolver?.cachedForLocation(permissionLevel, latitude, longitude, ellipsoidMeters)
+
+internal fun LocationHooker.resolveGeoidAltitudeOnWorker(
     config: JSONObject,
     motion: SpoofedMotion,
     ellipsoidMeters: Double
 ): NmeaAltitude? {
-    if (Build.VERSION.SDK_INT < 35) return null
-    val resolver = synchronized(nmeaAltitudeResolverLock) {
-        if (retiringGeneration || readConfig() !== config) return null
-        nmeaAltitudeResolver ?: run {
+    if (!usesColorOsNmeaModel() || Build.VERSION.SDK_INT < 35) return null
+    val resolver = synchronized(geoidAltitudeResolverLock) {
+        if (retiringGeneration || readConfig() !== config || geoidAltitudeResolverUnavailable) return null
+        geoidAltitudeResolver ?: try {
             lateinit var installed: NmeaAltitudeResolver
             installed = newAndroidNmeaAltitudeResolver(
                 context = SystemHookUtils::getSystemContext,
                 onWarmResult = { loaded ->
-                    if (!retiringGeneration && nmeaAltitudeResolver === installed &&
+                    if (!retiringGeneration && geoidAltitudeResolver === installed &&
                         readConfig()?.optBoolean("active", false) == true) {
+                        // Keep the existing diagnostic keys for the shared converter.
                         HookStatus.workEventAndRequestSnapshot(
                             if (loaded) "nmea_altitude_model_loaded" else "nmea_altitude_model_unavailable"
                         )
                     }
                 }
             )
-            nmeaAltitudeResolver = installed
+            geoidAltitudeResolver = installed
             installed
+        } catch (_: RuntimeException) {
+            geoidAltitudeResolverUnavailable = true
+            return null
+        } catch (_: LinkageError) {
+            geoidAltitudeResolverUnavailable = true
+            return null
         }
     }
-    return resolver.resolveOnWorker(config, motion.lat, motion.lng, ellipsoidMeters)
+    return resolver.resolveOnWorker(config, motion.lat, motion.lng, ellipsoidMeters) {
+        !retiringGeneration && geoidAltitudeResolver === resolver && readConfig() === config
+    }
 }
 
 private fun buildModelNmeaSentences(

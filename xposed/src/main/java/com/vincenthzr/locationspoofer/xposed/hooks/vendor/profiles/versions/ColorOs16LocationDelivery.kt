@@ -7,7 +7,11 @@ import android.os.Looper
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
 import com.vincenthzr.locationspoofer.xposed.hooks.SystemHookUtils
 import com.vincenthzr.locationspoofer.xposed.hooks.SatelliteProfile
+import com.vincenthzr.locationspoofer.xposed.hooks.FINE_LOCATION_PERMISSION_LEVEL
+import com.vincenthzr.locationspoofer.xposed.hooks.cachedGeoidAltitudeForLocation
+import com.vincenthzr.locationspoofer.xposed.hooks.resolveGeoidAltitudeOnWorker
 import com.vincenthzr.locationspoofer.xposed.utils.RouteEngine
+import com.vincenthzr.locationspoofer.xposed.utils.SpoofedMotion
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemClassLocator
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.diagnostics.HookStatus
@@ -57,6 +61,7 @@ internal class ColorOs16LocationDelivery(
     private lateinit var registrationClass: Class<*>
     private lateinit var continuousRegistrationClass: Class<*>
     private lateinit var getIdentity: Method
+    private var getRegistrationPermissionLevel: Method? = null
     private lateinit var getUid: Method
     private lateinit var getPackageName: Method
     private lateinit var acceptLocation: Method
@@ -89,6 +94,10 @@ internal class ColorOs16LocationDelivery(
             // Probe all required signatures before installing anything. Do not silently fall
             // back to the legacy global cache mutation when a different ROM changes them.
             getIdentity = registrationClass.getDeclaredMethod("getIdentity").accessible()
+            getRegistrationPermissionLevel = optionalMslAltitude {
+                registrationClass.getDeclaredMethod("getPermissionLevel").accessible()
+                    .takeIf { it.returnType == Int::class.javaPrimitiveType }
+            }
             getUid = identity.getMethod("getUid").accessible()
             getPackageName = identity.getMethod("getPackageName").accessible()
             acceptLocation = registrationClass.getDeclaredMethod("acceptLocationChange", result).accessible()
@@ -199,7 +208,9 @@ internal class ColorOs16LocationDelivery(
             hook(getLastUnsafe) { chain ->
                 val owner = chain.thisObject
                 if (owner != null && lastLocationScope.current === owner) {
-                    val fake = guarded("last location") { makeLocation(owner) }
+                    val fake = guarded("last location") {
+                        makeLocation(owner, chain.args.getOrNull(1) as? Int)
+                    }
                     if (fake != null) return@hook fake
                 }
                 chain.proceed(chain.args.toTypedArray())
@@ -215,7 +226,10 @@ internal class ColorOs16LocationDelivery(
                             val config = module.readConfig()
                             val caller = getIdentity.invoke(registration)
                             if (config != null && isTarget(owner, caller, config)) {
-                                copyResult(originalResult, config)
+                                val permissionLevel = optionalMslAltitude {
+                                    getRegistrationPermissionLevel?.invoke(registration) as? Int
+                                }
+                                copyResult(originalResult, config, permissionLevel)
                             } else null
                         }
                     } else null
@@ -321,6 +335,12 @@ internal class ColorOs16LocationDelivery(
     private fun tick() {
         val config = module.readConfig() ?: return
         if (!config.optBoolean("active", false)) return
+        // Let the resolver limit asset reads. A busy converter can be tried on the next demand tick.
+        optionalMslAltitude<Unit> {
+            val motion = module.getCurrentSpoofedMotion("WGS-84") ?: return@optionalMslAltitude
+            module.resolveGeoidAltitudeOnWorker(config, motion, RouteEngine.realisticAltitude(config))
+        }
+        if (!enabled || module.retiringGeneration || module.readConfig() !== config) return
         val snapshot = synchronized(managers) { managers.toList() }
         for (owner in snapshot) {
             guarded("provider heartbeat") {
@@ -354,31 +374,69 @@ internal class ColorOs16LocationDelivery(
         } ?: false
 
 
-    private fun makeLocation(owner: Any): Location? {
+    private fun makeLocation(owner: Any, permissionLevel: Int? = null): Location? {
         val config = module.readConfig() ?: return null
         if (!config.optBoolean("active", false)) return null
         val motion = module.getCurrentSpoofedMotion("WGS-84") ?: return null
         val provider = nameField.get(owner) as String
+        val altitude = RouteEngine.realisticAltitude(config)
         return (SystemHookUtils.buildFakeLocation(
-            loader, provider, motion, RouteEngine.realisticAltitude(config), module.getJitteredAccuracy()
-        ) as? Location)?.also { applySatelliteExtras(it, config) }
+            loader, provider, motion, altitude, module.getJitteredAccuracy()
+        ) as? Location)?.also {
+            applyMslAltitude(it, config, permissionLevel, motion, altitude)
+            applySatelliteExtras(it, config)
+        }
     }
 
-    private fun copyResult(original: Any, config: JSONObject): Any? {
+    private fun copyResult(original: Any, config: JSONObject, permissionLevel: Int?): Any? {
         val motion = module.getCurrentSpoofedMotion("WGS-84") ?: return null
         // Deep-copy both Location and extras. Never mutate data shared with another registration.
         val copy = deepCopyResult.invoke(original)
         val locations = resultAsList.invoke(copy) as List<*>
         for (item in locations) {
             val location = item as Location
+            val altitude = RouteEngine.realisticAltitude(config)
             SystemHookUtils.applyFakeLocationFields(
-                location, motion, RouteEngine.realisticAltitude(config), module.getJitteredAccuracy()
+                location, motion, altitude, module.getJitteredAccuracy()
             )
             location.removeMslAltitude()
             location.removeMslAltitudeAccuracy()
+            applyMslAltitude(location, config, permissionLevel, motion, altitude)
             applySatelliteExtras(location, config)
         }
         return copy
+    }
+
+    private fun applyMslAltitude(
+        location: Location,
+        config: JSONObject,
+        permissionLevel: Int?,
+        motion: SpoofedMotion,
+        ellipsoidMeters: Double
+    ) {
+        if (permissionLevel != FINE_LOCATION_PERMISSION_LEVEL || !enabled ||
+            module.retiringGeneration || module.readConfig() !== config) return
+        optionalMslAltitude<Unit> {
+            // Field rewriting can fail locally. Only project a completed target sample.
+            if (!location.hasAltitude() || location.latitude != motion.lat ||
+                location.longitude != motion.lng || location.altitude != ellipsoidMeters) return@optionalMslAltitude
+            val projection = cachedGeoidAltitudeForLocation(
+                permissionLevel, location.latitude, location.longitude, location.altitude
+            ) ?: return@optionalMslAltitude
+            val verticalAccuracy = if (location.hasVerticalAccuracy()) location.verticalAccuracyMeters else null
+            val accuracy = projection.locationAccuracyMeters(verticalAccuracy)
+            if (!enabled || module.retiringGeneration || module.readConfig() !== config) return@optionalMslAltitude
+            location.mslAltitudeMeters = projection.meanSeaLevelMeters
+            accuracy?.let { location.mslAltitudeAccuracyMeters = it }
+        }
+    }
+
+    private inline fun <T> optionalMslAltitude(action: () -> T): T? = try {
+        action()
+    } catch (_: Exception) {
+        null
+    } catch (_: LinkageError) {
+        null
     }
 
     private fun applySatelliteExtras(location: Location, config: JSONObject) {

@@ -15,18 +15,22 @@ internal fun newAndroidNmeaAltitudeResolver(
 private class AndroidNmeaAltitudeModel(private val context: () -> Context?) : NmeaAltitudeModel {
     private val converter = AltitudeConverter()
 
-    override fun cachedMeanSeaLevel(latitude: Double, longitude: Double, ellipsoidMeters: Double): Double? {
+    override fun cachedMeanSeaLevel(latitude: Double, longitude: Double, ellipsoidMeters: Double): ModelMslAltitude? {
         val input = location(latitude, longitude, ellipsoidMeters)
-        return if (converter.tryAddMslAltitudeToLocation(input) && input.hasMslAltitude()) {
-            input.mslAltitudeMeters
-        } else null
+        return if (converter.tryAddMslAltitudeToLocation(input)) readProjection(input) else null
     }
 
-    override fun loadMeanSeaLevel(latitude: Double, longitude: Double, ellipsoidMeters: Double): Double? {
+    override fun loadMeanSeaLevel(latitude: Double, longitude: Double, ellipsoidMeters: Double): ModelMslAltitude? {
         val appContext = context() ?: return null
         val input = location(latitude, longitude, ellipsoidMeters)
         converter.addMslAltitudeToLocation(appContext, input)
-        return if (input.hasMslAltitude()) input.mslAltitudeMeters else null
+        return readProjection(input)
+    }
+
+    private fun readProjection(input: Location): ModelMslAltitude? {
+        if (!input.hasMslAltitude()) return null
+        val rmse = if (input.hasMslAltitudeAccuracy()) input.mslAltitudeAccuracyMeters else null
+        return ModelMslAltitude(input.mslAltitudeMeters, rmse)
     }
 
     private fun location(latitude: Double, longitude: Double, ellipsoidMeters: Double): Location =
@@ -34,5 +38,7 @@ private class AndroidNmeaAltitudeModel(private val context: () -> Context?) : Nm
             input.latitude = latitude
             input.longitude = longitude
             input.altitude = ellipsoidMeters
+            // Isolate the local model error from the uncertainty of any particular fix.
+            input.verticalAccuracyMeters = 0f
         }
 }
