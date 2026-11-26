@@ -45,7 +45,9 @@ adb shell am broadcast --receiver-foreground -a com.codex.locationstartup.CAPTUR
 
 广播成功返回预计的 `altitude-reference-*.json` 文件名。工作线程完成后，使用 `adb shell run-as com.codex.locationstartup cat files/location-startup/文件名` 读取本地结果。最多保留 20 份高程报告，重复命令在前一次运行中返回 `altitude_reference_busy`。
 
-转换使用 Android 34 及以上的公开 `AltitudeConverter`，并将合成参考输入的副本以垂直精度 0 送入当前 ROM 模型。JSON 保留原始输入、输出、SDK 和固件信息、起止时间、`h − H` 分离及模型返回的 MSL 精度。转换失败或 API 不支持时，分离和精度留空。该命令不会发起位置请求，结果仅用于验证平台模型。
+转换使用 Android 34 及以上的公开 `AltitudeConverter`。1.6.2（versionCode 9）可加 `--es vertical_accuracy 1.5`，以米为单位指定有限非负浮点值。省略参数时仍用 `0`，显式传 `--es vertical_accuracy absent` 时不设垂直精度。无效参数在模型运行前拒绝。
+
+JSON schema 2 的 `input` 包含实际送入模型的垂直精度及其存在标记。转换只修改该合成参考位置的副本，写入 `output`。报告保留 SDK、固件信息、起止时间、`h − H` 分离及模型返回的 MSL 精度。转换失败或 API 不支持时，分离和精度留空。该命令不会发起位置请求，结果仅用于验证平台模型。
 
 未收到定位不代表无泄漏，mock 字段也不能单独判断定位来源。未出现 `session_end` 的报告属于未完成采样。报告包含原始坐标，请按需分享。
 

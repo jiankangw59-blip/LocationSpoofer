@@ -23,10 +23,12 @@ final class AltitudeReference {
 
     private AltitudeReference() {}
 
-    static String enqueue(Context context, StartupRecorder.Stamp received, String lat, String lon, String alt) {
+    static String enqueue(Context context, StartupRecorder.Stamp received, String lat, String lon, String alt,
+                          String verticalAccuracy, boolean verticalAccuracySupplied) {
         double latitude = finite(lat);
         double longitude = finite(lon);
         double altitude = finite(alt);
+        Float verticalAccuracyMeters = parseVerticalAccuracy(verticalAccuracy, verticalAccuracySupplied);
         if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
             throw new IllegalArgumentException("Coordinates are outside WGS84 bounds");
         }
@@ -36,7 +38,8 @@ final class AltitudeReference {
         try {
             Thread worker = new Thread(() -> {
                 try {
-                    write(context, filename, convert(context, received, latitude, longitude, altitude));
+                    write(context, filename, convert(context, received, latitude, longitude, altitude,
+                        verticalAccuracyMeters));
                 } catch (IOException | RuntimeException | LinkageError failure) {
                     Log.w(TAG, "Altitude reference report " + filename + " " + failure.getClass().getName());
                 } finally {
@@ -58,8 +61,19 @@ final class AltitudeReference {
         return value;
     }
 
+    private static Float parseVerticalAccuracy(String text, boolean supplied) {
+        if (!supplied) return 0.0f;
+        if ("absent".equals(text)) return null;
+        if (text == null || text.length() > 64) throw new IllegalArgumentException("Invalid vertical accuracy");
+        float value = Float.parseFloat(text);
+        if (!Float.isFinite(value) || Float.compare(value, 0.0f) < 0) {
+            throw new IllegalArgumentException("Vertical accuracy must be a finite nonnegative float");
+        }
+        return value;
+    }
+
     private static JSONObject convert(Context context, StartupRecorder.Stamp received,
-                                      double latitude, double longitude, double altitude) {
+                                      double latitude, double longitude, double altitude, Float verticalAccuracyMeters) {
         StartupRecorder.Stamp begin = StartupRecorder.Stamp.now();
         Location input = new Location("altitude_reference");
         input.setLatitude(latitude);
@@ -67,8 +81,8 @@ final class AltitudeReference {
         input.setAltitude(altitude);
         input.setTime(received.wallMs());
         input.setElapsedRealtimeNanos(received.elapsedNs());
+        if (verticalAccuracyMeters != null) input.setVerticalAccuracyMeters(verticalAccuracyMeters);
         Location output = new Location(input);
-        output.setVerticalAccuracyMeters(0.0f);
 
         boolean attempted = Build.VERSION.SDK_INT >= 34;
         String status = "unsupported";
@@ -91,7 +105,7 @@ final class AltitudeReference {
         }
         StartupRecorder.Stamp end = StartupRecorder.Stamp.now();
         JSONObject report = new JSONObject();
-        LocationFields.put(report, "schema_version", 1);
+        LocationFields.put(report, "schema_version", 2);
         LocationFields.put(report, "input_kind", "synthetic_model_reference");
         LocationFields.put(report, "sdk_int", Build.VERSION.SDK_INT);
         LocationFields.put(report, "android_release", Build.VERSION.RELEASE);

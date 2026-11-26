@@ -49,7 +49,8 @@ public final class MainActivity extends Activity {
                     reply(RESULT_OK, file);
                 } else if (CAPTURE_ALTITUDE_REFERENCE.equals(action)) {
                     String file = AltitudeReference.enqueue(getApplicationContext(), received,
-                        intent.getStringExtra("lat"), intent.getStringExtra("lon"), intent.getStringExtra("alt"));
+                        intent.getStringExtra("lat"), intent.getStringExtra("lon"), intent.getStringExtra("alt"),
+                        intent.getStringExtra("vertical_accuracy"), intent.hasExtra("vertical_accuracy"));
                     if (file == null) {
                         reply(RESULT_CANCELED, "altitude_reference_busy");
                     } else {
