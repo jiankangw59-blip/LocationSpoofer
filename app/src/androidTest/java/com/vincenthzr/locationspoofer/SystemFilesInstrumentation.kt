@@ -51,6 +51,7 @@ class SystemFilesInstrumentation : Instrumentation() {
     private var fixtureRunId: String? = null
     private var fixtureTransactionRegression = false
     private var nativeRegistrationCleanup = false
+    private var locationElapsedUncertainty = false
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
@@ -58,6 +59,7 @@ class SystemFilesInstrumentation : Instrumentation() {
         fixtureRunId = arguments?.getString("fixture_run_id")
         fixtureTransactionRegression = arguments?.getString("check") == "fixture-transaction-regression"
         nativeRegistrationCleanup = arguments?.getString("check") == "native-registration-cleanup"
+        locationElapsedUncertainty = arguments?.getString("check") == "location-elapsed-uncertainty"
         wiglePagingDiagnosis = arguments?.getString("check") == "wigle-paging-diagnose"
         lookupStatusRegression = arguments?.getString("check") == "lookup-status-regression"
         offlineIndexRegression = arguments?.getString("check") == "offline-index-regression"
@@ -99,6 +101,11 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (locationElapsedUncertainty) {
+            val output = verifyLocationElapsedUncertainty(lookupArguments?.getString("phase"))
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (nativeRegistrationCleanup) {
             val output = verifyNativeRegistrationCleanup()
             finish(if (output.getString("result") == "PASS") -1 else 0, output)

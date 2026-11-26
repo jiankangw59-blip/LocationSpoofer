@@ -396,7 +396,7 @@ internal class ColorOs16LocationDelivery(
         for (item in locations) {
             val location = item as Location
             val altitude = RouteEngine.realisticAltitude(config)
-            SystemHookUtils.applyFakeLocationFields(
+            applyRetimedLocationFields(
                 location, motion, altitude, module.getJitteredAccuracy()
             )
             location.removeMslAltitude()
