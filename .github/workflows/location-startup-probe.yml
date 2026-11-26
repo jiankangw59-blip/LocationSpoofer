@@ -20,7 +20,9 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       - name: Check offline report analyzer
-        run: python3 tools/location-startup-probe/inspect_reports.py --self-test
+        run: |
+          python3 tools/location-startup-probe/inspect_reports.py --self-test
+          python3 tools/location-startup-probe/compare_location_snapshots.py --self-test
 
       - uses: actions/setup-java@v6.3.0
         with:

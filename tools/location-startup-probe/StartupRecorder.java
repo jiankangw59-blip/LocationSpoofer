@@ -11,7 +11,6 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -36,7 +35,6 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
 
 final class StartupRecorder {
@@ -520,21 +518,8 @@ final class StartupRecorder {
     }
 
     private void location(Session session, Location value, Stamp received, JSONObject data, int source) {
-        set(data, "provider", value.getProvider());
-        set(data, "time_ms", value.getTime());
-        set(data, "elapsed_realtime_ns", value.getElapsedRealtimeNanos());
-        set(data, "latitude", value.getLatitude());
-        set(data, "longitude", value.getLongitude());
-        set(data, "has_accuracy", value.hasAccuracy());
-        set(data, "accuracy_m", value.hasAccuracy() ? value.getAccuracy() : null);
-        set(data, "has_altitude", value.hasAltitude());
-        set(data, "altitude_m", value.hasAltitude() ? value.getAltitude() : null);
-        set(data, "has_speed", value.hasSpeed());
-        set(data, "speed_m_s", value.hasSpeed() ? value.getSpeed() : null);
-        set(data, "has_bearing", value.hasBearing());
-        set(data, "bearing_deg", value.hasBearing() ? value.getBearing() : null);
-        set(data, "is_mock", value.isMock());
-        extras(session, value, data);
+        LocationFields.putFields(value, data);
+        if (data.has("extras_keys_error")) session.errors++;
         if (!emit(session, "location", received, data)) return;
         long offset = received.elapsedNs - session.origin.elapsedNs;
         int window = window(offset);
@@ -563,30 +548,6 @@ final class StartupRecorder {
     }
 
     private record Observation(long elapsedNs, int source) {}
-
-    private void extras(Session session, Location value, JSONObject data) {
-        JSONArray keys = new JSONArray();
-        int omitted = 0;
-        int shortened = 0;
-        try {
-            Bundle extras = value.getExtras();
-            if (extras != null) for (String name : extras.keySet()) {
-                if (keys.length() >= 64) { omitted++; continue; }
-                if (name != null && name.length() > 256) {
-                    name = name.substring(0, Character.isHighSurrogate(name.charAt(255)) ? 255 : 256);
-                    shortened++;
-                }
-                keys.put(name);
-            }
-        } catch (RuntimeException error) {
-            session.errors++;
-            set(data, "extras_keys_error", error.getClass().getName());
-            keys = null;
-        }
-        set(data, "extras_keys", keys);
-        set(data, "extras_keys_omitted_count", omitted);
-        set(data, "extras_keys_shortened_count", shortened);
-    }
 
     private void finish(Session session, String reason, Stamp requested) {
         if (!session.running) return;
@@ -776,10 +737,7 @@ final class StartupRecorder {
     }
 
     private static void set(JSONObject data, String key, Object value) {
-        if ((value instanceof Double && !Double.isFinite((Double) value)) ||
-            (value instanceof Float && !Float.isFinite((Float) value))) value = value.toString();
-        try { data.put(key, value == null ? JSONObject.NULL : value); }
-        catch (JSONException error) { throw new IllegalArgumentException("Cannot encode field " + key, error); }
+        LocationFields.put(data, key, value);
     }
 
     private static final class Session {

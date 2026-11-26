@@ -35,4 +35,19 @@ adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.cod
 
 未收到定位不代表无泄漏，mock 字段也不能单独判断定位来源。未出现 `session_end` 的报告属于未完成采样。报告包含原始坐标，请按需分享。
 
+### Shell GPS 参考
+
+1.3 版（versionCode 4）将 `ShellLocationReferenceMain` 一同打包。它在 ADB Shell 的 UID 2000 下使用系统登记的 `com.android.shell` 包上下文和已有权限，只读取 GPS。默认读取一次缓存，无监听或单次请求。普通探针可同时保持前台，仿真配置与系统定位设置无需变更。
+
+```sh
+adb push location-startup-probe.apk /data/local/tmp/location-startup-probe.apk
+adb exec-out env CLASSPATH=/data/local/tmp/location-startup-probe.apk app_process /system/bin com.codex.locationstartup.ShellLocationReferenceMain > shell-gps-cache.jsonl
+```
+
+使用 Windows PowerShell 5 时，用支持字节重定向的终端或程序保存输出，避免把 UTF-8 JSONL 改写为 UTF-16。
+
+需要独立主动采样时，在类名后加 `--request`，将输出写入另一个本地文件。该模式提交一条持续请求和一次单次请求，最长观察窗口为 30 秒，退出时取消单次请求并移除监听。主动请求可能增加 GNSS 需求，应单独标注该轮的采样条件。
+
+Shell 和前台探针使用同一组原始定位字段。比较时核对同一次启动、GPS provider、样本源时间和精度。空结果和 API 异常保留在 JSONL 中，`reference_end.status` 为 `ok`、`no_fix` 或 `error`。`ok` 只表示读取到了坐标，来源仍需通过独立证据确认。缺失终态表示采样未完整结束。参考文件含真实位置候选，只在本地处理，勿上传。
+
 CI 构建使用 JDK 21 和 Android SDK 36。将 `PROBE_UNSIGNED` 设为 `1` 后执行 `python tools/location-startup-probe/build.py`，生成已对齐的 `location-startup-probe-unsigned.apk`。通过 `BUILD_TOOLS_VERSION` 选择已安装的 Build Tools。脚本输出 APK 路径、签名状态和 SHA-256。默认构建使用本地 debug keystore 签名，也可通过 `LOCATION_STARTUP_PROBE_KEYSTORE` 指定原 debug keystore 路径以保留更新身份。
