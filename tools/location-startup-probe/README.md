@@ -60,8 +60,12 @@ adb exec-out env CLASSPATH=/data/local/tmp/location-startup-probe.apk app_proces
 
 使用 Windows PowerShell 5 时，用支持字节重定向的终端或程序保存输出，避免把 UTF-8 JSONL 改写为 UTF-16。
 
-需要独立主动采样时，在类名后加 `--request`，将输出写入另一个本地文件。该模式提交一条持续请求和一次单次请求，最长观察窗口为 30 秒，退出时取消单次请求并移除监听。主动请求可能增加 GNSS 需求，应单独标注该轮的采样条件。
+需要独立主动采样时，在类名后加 `--request`，将输出写入另一个本地文件。1.6（versionCode 7）的默认主动窗口仍为 30 秒，`--request --duration-ms 90000` 可将窗口延长至 90 秒，取值范围为 30000–90000。主动模式提交一条 GPS 持续请求和一次单次请求，并用同一真实身份的 Context 监听公开 GNSS 状态与 NMEA API。主动请求可能增加 GNSS 需求，应单独标注该轮的采样条件。GNSS 注册返回 true 后仍可能没有任何回调。
 
-Shell 和前台探针使用同一组原始定位字段。比较时核对同一次启动、GPS provider、样本源时间和精度。空结果和 API 异常保留在 JSONL 中，`reference_end.status` 为 `ok`、`no_fix` 或 `error`。`ok` 只表示读取到了坐标，来源仍需通过独立证据确认。缺失终态表示采样未完整结束。参考文件含真实位置候选，只在本地处理，勿上传。
+默认命令要求真实 UID 2000。作为独立系统 UID 对照时，可在参数末尾显式加 `--identity system`，例如 `--request --duration-ms 90000 --identity system`。调用方必须已为真实 UID 1000，入口核对当前 ROM 的 `android` 包和归属，报告标记为 `independent_system_uid_client`。该样本测试系统 UID 路径，主机需核对进程 PID 与 system_server 不同。UID 0 无法通过任一身份校验。
+
+JSONL 保存原始 NMEA 句子及 SDK 时间，卫星逐项保存 svid、星座、C/N0、仰角、方位、载频、基带 C/N0 及星历等标志。实际收到的启动、停止、首 fix 时间也会单列。退出时独立取消单次请求、移除 GPS、GNSS 状态和 NMEA 监听。报告保留每次 API 尝试的返回和异常。持续定位最多 90 条，NMEA、卫星状态与生命周期的独立上限和遗漏计数写入终态。
+
+Shell 和前台探针使用同一组原始定位字段。比较时核对同一次启动、GPS provider、样本源时间和精度。空结果和 API 异常保留在 JSONL 中，`reference_end.status` 为 `ok`、`no_fix` 或 `error`。主动 GPS fix、NMEA 和卫星状态分别有 `OBSERVED` 或 `UNOBSERVED`。缓存 GPS 结果单列。卫星数为 0 的状态帧也保留。到期后收到的定位或启动／停止事件带有 `after_deadline` 标记，不计入窗口覆盖。`ok` 只表示读取到了坐标，来源仍需通过独立证据确认。缺失终态表示采样未完整结束。参考文件含真实位置候选，只在本地处理，勿上传。
 
 CI 构建使用 JDK 21 和 Android SDK 36。将 `PROBE_UNSIGNED` 设为 `1` 后执行 `python tools/location-startup-probe/build.py`，生成已对齐的 `location-startup-probe-unsigned.apk`。通过 `BUILD_TOOLS_VERSION` 选择已安装的 Build Tools。脚本输出 APK 路径、签名状态和 SHA-256。默认构建使用本地 debug keystore 签名，也可通过 `LOCATION_STARTUP_PROBE_KEYSTORE` 指定原 debug keystore 路径以保留更新身份。
