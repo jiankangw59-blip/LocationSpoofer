@@ -136,7 +136,7 @@ internal suspend fun MainViewModel.saveEnvironmentData(
             } else {
                 positiveCellInt(obj, "basestationId", default = 0)
             }
-            if (area <= 0 && identity <= 0 && basestationId <= 0) continue
+            if (area <= 0 && identity <= 0 && basestationId <= 0 && nci <= 0) continue
             val cellKey = "${type}_${positiveCellInt(obj, "mcc", default = 460)}_${
                 positiveCellInt(
                     obj,
@@ -150,11 +150,7 @@ internal suspend fun MainViewModel.saveEnvironmentData(
                 mcc = positiveCellInt(obj, "mcc", default = 460),
                 mnc = positiveCellInt(obj, "mnc", "net", default = 0),
                 tac = tac, ci = ci,
-                pci = positiveCellInt(
-                    obj,
-                    "pci",
-                    default = if (identity > 0) (identity % 504).coerceIn(0, 503) else 0
-                ),
+                pci = obj.optInt("pci", Int.MAX_VALUE).takeIf { it in 0..if (type == "NR") 1007 else 503 } ?: Int.MAX_VALUE,
                 lac = lac, cid = cid,
                 psc = positiveCellInt(obj, "psc", default = 0),
                 nci = nci,
@@ -168,7 +164,7 @@ internal suspend fun MainViewModel.saveEnvironmentData(
                     locId,
                     cellKey,
                     cellSignalDbm(obj, i),
-                    obj.optBoolean("isRegistered", i == 0)
+                    obj.optBoolean("isRegistered", false)
                 )
             )
         }
@@ -332,6 +328,11 @@ internal fun MainViewModel.locationToJson(
     }
 
     val explicitCellKey = closestRecord?.location?.selectedCellKey
+    val towerPositions = remoteCellRepository.peekLatest()?.points.orEmpty().associateBy { point ->
+        val identity = point.identity
+        "${identity.radio}/${identity.mcc}/${identity.mnc}/${identity.tac}/${identity.id}"
+    }
+    val targetWgs84 = com.vincenthzr.locationspoofer.utils.CoordinateUtils.gcj02ToWgs84(targetLat, targetLng)
     val cellArr = org.json.JSONArray()
     val cellList = mutableListOf<org.json.JSONObject>()
     cellMap.forEach { (cellKey, rc) ->
@@ -352,6 +353,12 @@ internal fun MainViewModel.locationToJson(
         obj.put("systemId", rc.device.systemId)
         obj.put("basestationId", rc.device.basestationId)
         obj.put("dbm", interpolatedDbm)
+        val towerKey = "${rc.device.type}/${rc.device.mcc}/${rc.device.mnc}/${rc.device.tac}/" +
+            if (rc.device.type == "NR") rc.device.nci else rc.device.ci
+        towerPositions[towerKey]?.let { point ->
+            obj.put("distance_m", com.vincenthzr.locationspoofer.utils.GeoMath.distance(targetWgs84,
+                com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng(point.latitude, point.longitude)))
+        }
         val isReg =
             if (explicitCellKey != null) cellKey.equals(explicitCellKey, ignoreCase = true) else rc.locationCell.isRegistered
         obj.put("isRegistered", isReg)
@@ -361,7 +368,29 @@ internal fun MainViewModel.locationToJson(
             cellList.add(obj)
         }
     }
-    cellList.forEach { cellArr.put(it) }
+    // Remote databases contain tower identities, not this handset's attachment state.
+    // Choose a serving cell in the simulation output only; keep the source records intact.
+    if (cellList.isNotEmpty() && cellList.none { it.optBoolean("isRegistered") }) {
+        val serving = cellList.maxByOrNull { it.optInt("dbm", -140) }!!
+        serving.put("isRegistered", true)
+        cellList.remove(serving)
+        cellList.add(0, serving)
+    }
+    val selectedCells = com.vincenthzr.locationspoofer.utils.VisibleCells.select(cellList.map { cell ->
+        val radio = cell.optString("type").uppercase(java.util.Locale.ROOT)
+        val area = if (radio in setOf("GSM", "WCDMA", "UMTS")) cell.optInt("lac") else cell.optInt("tac")
+        val identity = when (radio) {
+            "NR" -> cell.optLong("nci").toString()
+            "GSM", "WCDMA", "UMTS" -> cell.optLong("cid").toString()
+            "CDMA" -> "${cell.optInt("networkId")}/${cell.optInt("systemId")}/${cell.optInt("basestationId")}"
+            else -> cell.optLong("ci").toString()
+        }
+        com.vincenthzr.locationspoofer.utils.VisibleCells.Candidate(
+            "$radio/${cell.optInt("mcc")}/${cell.optInt("mnc")}/$area/$identity",
+            cell.optInt("dbm", -100), cell.optBoolean("isRegistered"),
+            cell.optDouble("distance_m", Double.NaN).takeIf { it.isFinite() && it >= 0 })
+    })
+    selectedCells.forEachIndexed { index, source -> cellArr.put(cellList[source].put("isRegistered", index == 0)) }
 
     val btMap =
         mutableMapOf<String, com.vincenthzr.locationspoofer.data.db.LocationWithBluetooth>()

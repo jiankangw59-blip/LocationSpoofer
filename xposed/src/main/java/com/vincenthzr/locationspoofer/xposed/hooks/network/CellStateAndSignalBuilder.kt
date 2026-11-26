@@ -191,8 +191,9 @@ internal fun LocationHooker.constructCellIdentityByType(
     clazz: Class<*>,
     mcc: Int, mccStr: String,
     mnc: Int, mncStr: String,
-    tacOrLac: Int, ciOrCid: Int, pci: Int
+    tacOrLac: Int, ciOrCid: Int, pci: Int, nci: Long = ciOrCid.toLong()
 ): Any {
+    require(type != "NR" || nci in 0..CellIdentityValues.MAX_NCI)
     val ctors = clazz.declaredConstructors.onEach { it.isAccessible = true }
 
     // 按参数个数匹配构造器，调用失败则返回 null
@@ -269,7 +270,7 @@ internal fun LocationHooker.constructCellIdentityByType(
 
         "NR" -> {
             // Android 10: (int pci, int tac, int nrArfcn, String mcc, String mnc, long nci, String alphaLong, String alphaShort) — 8 参数
-            tryNewInstance(pci, tacOrLac, 0, mccStr, mncStr, ciOrCid.toLong(), "", "")
+            tryNewInstance(pci, tacOrLac, 0, mccStr, mncStr, nci, "", "")
             // Android 11+: (int pci, int tac, int nrArfcn, int[] bands, String mcc, String mnc, long nci, String alphaLong, String alphaShort, Collection additionalPlmns) — 10 参数
                 ?: tryNewInstance(
                     pci,
@@ -278,7 +279,7 @@ internal fun LocationHooker.constructCellIdentityByType(
                     IntArray(0),
                     mccStr,
                     mncStr,
-                    ciOrCid.toLong(),
+                    nci,
                     "",
                     "",
                     emptyList<Any>()
@@ -300,6 +301,21 @@ internal fun LocationHooker.constructCellIdentityByType(
     }
 
     fun sanitizeCellIdentity(target: Any) {
+        // These sources contain no channel observations. Zero is a valid channel on
+        // several RATs, so all constructor/fallback paths must keep them unavailable.
+        val unknownFields = when (type) {
+            "LTE" -> listOf("mEarfcn", "mBandwidth")
+            "GSM" -> listOf("mArfcn")
+            "WCDMA", "UMTS" -> listOf("mUarfcn")
+            "NR" -> listOf("mNrArfcn")
+            else -> emptyList()
+        }
+        unknownFields.forEach { field ->
+            try { XposedHelpers.setIntField(target, field, Int.MAX_VALUE) } catch (_: Throwable) { }
+        }
+        if (type == "GSM") {
+            try { XposedHelpers.setIntField(target, "mBsic", pci) } catch (_: Throwable) { }
+        }
         try {
             val plmns = XposedHelpers.getObjectField(target, "mAdditionalPlmns")
             if (plmns == null) {
@@ -423,7 +439,7 @@ internal fun LocationHooker.constructCellIdentityByType(
                 } catch (_: Throwable) {
                 }
                 try {
-                    XposedHelpers.setLongField(obj, "mNci", ciOrCid.toLong())
+                    XposedHelpers.setLongField(obj, "mNci", nci)
                 } catch (_: Throwable) {
                 }
                 try {
@@ -528,7 +544,7 @@ internal fun LocationHooker.constructCellIdentityByType(
             } catch (_: Throwable) {
             }
             try {
-                XposedHelpers.setLongField(fallbackObj, "mNci", ciOrCid.toLong())
+                XposedHelpers.setLongField(fallbackObj, "mNci", nci)
             } catch (_: Throwable) {
             }
             try {

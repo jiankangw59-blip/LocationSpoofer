@@ -167,4 +167,5 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     androidTestImplementation(libs.room.runtime)
     androidTestImplementation(libs.room.ktx)
+    androidTestImplementation(libs.okhttp)
 }

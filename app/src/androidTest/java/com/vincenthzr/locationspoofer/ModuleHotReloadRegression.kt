@@ -2,6 +2,8 @@ package com.vincenthzr.locationspoofer
 
 import android.app.Instrumentation
 import android.os.Bundle
+import com.vincenthzr.locationspoofer.data.model.HookConfigCheck
+import com.vincenthzr.locationspoofer.data.repository.HookStatusRepository
 import com.vincenthzr.locationspoofer.utils.FrameworkConfigChannel
 import com.vincenthzr.locationspoofer.utils.XposedModuleStatus
 import com.vincenthzr.locationspoofer.utils.RootManager
@@ -23,8 +25,47 @@ private suspend fun moduleService(): XposedService {
     error("Framework service unavailable")
 }
 
+private suspend fun readMatchingReloadReports(
+    baseline: Map<String, JSONObject>,
+    readSnapshotId: suspend () -> String,
+    readReports: () -> Map<String, JSONObject>
+): Map<String, JSONObject>? {
+    val snapshotId = readSnapshotId()
+    val current = readReports()
+    return current.takeIf { reports ->
+        reports.keys == baseline.keys && reports.all { (process, report) ->
+            report.optString("generation").isNotBlank() &&
+                report.optString("generation") != baseline.getValue(process).optString("generation") &&
+                report.optJSONObject("config")?.optString("snapshot_id") == snapshotId
+        } && readSnapshotId() == snapshotId
+    }
+}
+
+internal suspend fun verifyReloadObservation() {
+    val initial = "initial"
+    var snapshotId = initial
+    fun reports(generation: String, id: String) = mapOf(
+        "SYSTEM_SERVER" to JSONObject().put("generation", generation)
+            .put("config", JSONObject().put("snapshot_id", id))
+    )
+    val baseline = reports("first", initial)
+    val duringWait = "updated-during-wait"
+    check(readMatchingReloadReports(baseline, { snapshotId }) {
+        snapshotId = duringWait
+        reports("second", initial)
+    } == null)
+    val first = checkNotNull(readMatchingReloadReports(baseline, { snapshotId }) {
+        reports("second", duringWait)
+    })
+    val betweenCycles = "updated-between-cycles"
+    snapshotId = betweenCycles
+    check(readMatchingReloadReports(first, { snapshotId }) { reports("third", duringWait) } == null)
+    checkNotNull(readMatchingReloadReports(first, { snapshotId }) { reports("third", betweenCycles) })
+    check(snapshotId == betweenCycles)
+}
+
 /** Module-scoped diagnostics; does not start or stop a simulation. */
-internal fun Instrumentation.verifyModuleRuntime(): Bundle {
+internal fun Instrumentation.verifyModuleRuntime(verifyConfigStatus: Boolean = false, runId: String? = null): Bundle {
     val output = Bundle()
     try {
         val service = runBlocking { moduleService() }
@@ -42,6 +83,25 @@ internal fun Instrumentation.verifyModuleRuntime(): Bundle {
             val payload = envelope.optString("payload")
             output.putString("configuration", "published=${envelope.optLong("published_at")},inline=${payload.isNotEmpty()},active=${if (payload.isNotEmpty()) JSONObject(payload).optBoolean("active") else "remote-file"}")
         }
+        if (verifyConfigStatus) {
+            val repository = HookStatusRepository(RootManager())
+            val check = runBlocking {
+                withTimeout(15_000) {
+                    while (true) {
+                        val before = runId?.let { withFixtureConfig(it) { fixture -> fixture.requireCurrent().snapshot } }
+                        val result = repository.diagnose().config
+                        val after = runId?.let { withFixtureConfig(it) { fixture -> fixture.requireCurrent().snapshot } }
+                        if (before == after && result.state == HookConfigCheck.State.COMPARED &&
+                            result.hosts.size == 3 && result.hosts.values.all { it == HookConfigCheck.HostState.MATCHED }) {
+                            return@withTimeout result
+                        }
+                        delay(500)
+                    }
+                    error("Unreachable")
+                }
+            }
+            output.putString("config_hosts", check.hosts.entries.joinToString { "${it.key}=${it.value}" })
+        }
         output.putString("result", "PASS")
     } catch (error: Throwable) {
         output.putString("result", "FAIL: ${error.stackTraceToString()}")
@@ -50,7 +110,7 @@ internal fun Instrumentation.verifyModuleRuntime(): Bundle {
 }
 
 /** Exercises actual API 102 generation replacement, preserving scope and simulation payload. */
-internal fun Instrumentation.verifyModuleHotReload(): Bundle {
+internal fun Instrumentation.verifyModuleHotReload(activeProbeOnly: Boolean = false, runId: String? = null): Bundle {
     val output = Bundle()
     try {
         runBlocking {
@@ -63,9 +123,16 @@ internal fun Instrumentation.verifyModuleHotReload(): Bundle {
                 "Unexpected targets: $pids"
             }
             val preferences = service.getRemotePreferences(FrameworkConfigChannel.GROUP)
-            val original = JSONObject(requireNotNull(preferences.getString(FrameworkConfigChannel.SNAPSHOT_KEY, null)))
-            // This regression only republishes the inactive existing payload, never starts a simulation.
-            check(original.optString("file").isEmpty() && !JSONObject(original.getString("payload")).optBoolean("active"))
+            suspend fun expectedSnapshotId(): String {
+                val snapshot = if (activeProbeOnly) withFixtureConfig(runId) { it.requireCurrent().snapshot }
+                    else preferences.getString(FrameworkConfigChannel.SNAPSHOT_KEY, null)
+                val envelope = JSONObject(checkNotNull(snapshot))
+                check(envelope.optString("file").isEmpty())
+                val payload = JSONObject(envelope.getString("payload"))
+                check(payload.optBoolean("active") == activeProbeOnly) { "Simulation state changed during hot reload" }
+                return envelope.getString("id")
+            }
+            expectedSnapshotId()
             val root = RootManager()
             fun reports(): Map<String, JSONObject> = HookStatusFiles.PATHS.mapValues { (_, paths) ->
                 val command = paths.joinToString(" || ") { "cat '/proc/1/root$it' 2>/dev/null" }
@@ -91,22 +158,11 @@ internal fun Instrumentation.verifyModuleHotReload(): Bundle {
                         "${target.processName}: ${result.status()} ${result.message()}"
                     }
                 }
-                val newSnapshot = JSONObject(original.toString()).apply {
-                    put("id", UUID.randomUUID().toString())
-                    put("published_at", System.currentTimeMillis())
-                }
-                check(preferences.edit().putString(FrameworkConfigChannel.SNAPSHOT_KEY, newSnapshot.toString()).commit())
-                val timestamp = newSnapshot.getLong("published_at")
                 var after: Map<String, JSONObject>? = null
                 withTimeout(20_000) {
                     while (after == null) {
                         delay(500)
-                        val current = reports()
-                        if (current.all { (process, report) ->
-                                report.optString("generation").isNotBlank() &&
-                                    report.optString("generation") != baseline.getValue(process).optString("generation") &&
-                                    report.optJSONObject("config")?.optLong("modified") == timestamp
-                            }) after = current
+                        after = readMatchingReloadReports(baseline, ::expectedSnapshotId, ::reports)
                     }
                 }
                 val verified = requireNotNull(after)

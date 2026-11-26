@@ -217,10 +217,7 @@ internal fun LocationHooker.hookLocationProviders(classLoader: ClassLoader, curr
                                                             firstArg.elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                                                             try {
                                                                 val extras = firstArg.extras ?: android.os.Bundle()
-                                                                val satCount = config.optInt("satellite_count", 20)
-                                                                extras.putInt("satellites", satCount)
-                                                                extras.putInt("satellites_in_view", satCount)
-                                                                extras.putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
+                                                                SatelliteProfile.apply(extras, SatelliteProfile.count(config))
                                                                 extras.putBoolean("mockLocation", false)
                                                                 firstArg.extras = extras
                                                             } catch (_: Throwable) {}
@@ -252,11 +249,7 @@ internal fun LocationHooker.hookLocationProviders(classLoader: ClassLoader, curr
                                                                     loc.elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                                                                     try {
                                                                         val extras = loc.extras ?: android.os.Bundle()
-                                                                        val satCount = config.optInt("satellite_count", 20)
-                                                                        extras.putInt("satellites", satCount)
-                                                                        extras.putInt("satellites_in_view", satCount)
-                                                                        extras.putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
-                                                                        extras.putInt("satellites_visible", satCount)
+                                                                        SatelliteProfile.apply(extras, SatelliteProfile.count(config))
                                                                         extras.putBoolean("mockLocation", false)
                                                                         loc.extras = extras
                                                                     } catch (_: Throwable) {}
@@ -330,11 +323,7 @@ internal fun LocationHooker.hookLocationProviders(classLoader: ClassLoader, curr
                             XposedHelpers.callMethod(fakeLoc, "setElapsedRealtimeNanos", android.os.SystemClock.elapsedRealtimeNanos())
                             try {
                                 val extras = android.os.Bundle().apply {
-                                    val satCount = config.optInt("satellite_count", 20)
-                                    putInt("satellites", satCount)
-                                    putInt("satellites_in_view", satCount)
-                                    putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
-                                    putInt("satellites_visible", satCount)
+                                    SatelliteProfile.apply(this, SatelliteProfile.count(config))
                                     putBoolean("mockLocation", false)
                                 }
                                 XposedHelpers.callMethod(fakeLoc, "setExtras", extras)
@@ -405,11 +394,7 @@ internal fun LocationHooker.hookLocationProviders(classLoader: ClassLoader, curr
                     )
                     try {
                         val extras = android.os.Bundle().apply {
-                            val satCount = config.optInt("satellite_count", 20)
-                            putInt("satellites", satCount)
-                            putInt("satellites_in_view", satCount)
-                            putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
-                            putInt("satellites_visible", satCount)
+                            SatelliteProfile.apply(this, SatelliteProfile.count(config))
                             putBoolean("mockLocation", false)
                         }
                         XposedHelpers.callMethod(fakeLoc, "setExtras", extras)

@@ -1,5 +1,6 @@
 <?xml version="1.0" ?>
 <resources>
+    <string name="hook_component_settings_provider">系统设置读取</string>
     <string name="app_name">LocationSpoofer</string>
     <string name="map_type_label">地图类型</string>
     <string name="map_type_standard">标准地图</string>
@@ -122,6 +123,15 @@
     <string name="hook_status_updated_at">更新于 %1$s</string>
     <string name="hook_status_config">读取的配置：%1$s（%2$s 更新）</string>
     <string name="hook_status_config_none">没有读到配置文件</string>
+    <string name="hook_config_check_count">%1$d/%2$d 个宿主已确认加载当前配置</string>
+    <string name="hook_config_check_unavailable">暂时无法核对框架配置与宿主报告。</string>
+    <string name="hook_config_check_changing">读取期间配置发生了变化，请刷新查看。</string>
+    <string name="hook_config_host_matched">当前进程已报告此配置。</string>
+    <string name="hook_config_host_not_running">LSPosed 未报告唯一运行中的目标进程。</string>
+    <string name="hook_config_host_no_report">缺少可核对的进程报告。</string>
+    <string name="hook_config_host_old_process">报告来自旧进程，等待当前进程更新。</string>
+    <string name="hook_config_host_unconfirmed">报告缺少进程或配置标识，暂无法确认。</string>
+    <string name="hook_config_host_different">报告中的配置与框架当前配置不同。</string>
     <string name="hook_status_source">查找途径：%1$s</string>
     <string name="hook_status_errors">部署异常</string>
     <string name="hook_status_debug_dump">开机时转储系统服务结构</string>
@@ -566,7 +576,7 @@
     <string name="bt_address_hint">例如: AA:BB:CC:11:22:33</string>
     <string name="bt_rssi_label">信号强度 (RSSI: %1$d dBm)</string>
     <string name="bt_scan_record_label">广播包十六进制 (ScanRecordHex - 可选)</string>
-    <string name="bt_scan_record_hint">例如: 02010403033CFE... (直接粘贴31字节广播数据)</string>
+    <string name="bt_scan_record_hint">例如: 02010403033CFE...（粘贴完整广播；留空不生成信标）</string>
     <string name="designated_bt_badge">模拟首选</string>
     <string name="no_designated_bt">自动默认 (跟随扫描)</string>
     <string name="no_bt_data_in_record">该记录暂无蓝牙数据，点击右上角「+ 添加蓝牙」创建</string>

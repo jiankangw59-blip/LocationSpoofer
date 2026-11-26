@@ -306,11 +306,7 @@ internal fun LocationHooker.hookLocationGetters(classLoader: ClassLoader, curren
                 val config = readConfig()
                 if (config != null && config.optBoolean("active", false) && currentPkg.substringBefore(":") != "com.suseoaa.locationspoofer.fork") {
                     val bundle = (result as? android.os.Bundle) ?: android.os.Bundle()
-                    val satCount = config.optInt("satellite_count", 20)
-                    bundle.putInt("satellites", satCount)
-                    bundle.putInt("satellites_in_view", satCount)
-                    bundle.putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
-                    bundle.putInt("satellites_visible", satCount)
+                    SatelliteProfile.apply(bundle, SatelliteProfile.count(config))
                     bundle.putBoolean("mockLocation", false)
                     result = bundle
                 }

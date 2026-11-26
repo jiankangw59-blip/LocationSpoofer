@@ -10,8 +10,6 @@ import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.utils.XposedHelpers
 import io.github.libxposed.api.XposedInterface
 import java.lang.reflect.Method
-import java.util.Timer
-import java.util.TimerTask
 
 /** 只补充定位关闭时的可用性判断，不替换通用定位、GNSS、环境数据 Hook。 */
 internal class ColorOs16LocationAvailability(
@@ -21,7 +19,7 @@ internal class ColorOs16LocationAvailability(
     private val handles = mutableListOf<XposedInterface.HookHandle>()
     private val query = ThreadLocal<Boolean>()
     @Volatile private var live = true
-    private var timer: Timer? = null
+    private var configObserver: AutoCloseable? = null
     private var invalidate: Method? = null
 
     private fun enabled(owner: Any?, uid: Int? = null, pkg: String? = null): Boolean {
@@ -88,20 +86,18 @@ internal class ColorOs16LocationAvailability(
                     Criteria::class.java, Boolean::class.javaPrimitiveType!!))
             }
             var lastKey: String? = null
-            timer = Timer("LocationSpoofer-ColorOS16Availability", true).apply {
-                schedule(object : TimerTask() {
-                    override fun run() {
-                        if (!live) return
-                        runCatching {
-                            val config = module.readConfig()
-                            val key = "${config?.optBoolean("active", false)}|${config?.optBoolean("force_location_enabled", false)}|${config?.optBoolean("system_hook_global_mode", false)}|${config?.optJSONArray("system_hook_packages")}"
-                            if (key != lastKey) {
-                                invalidateMethod.invoke(null)
-                                lastKey = key
-                            }
-                        }.onFailure { HookStatus.error("ColorOS16 availability cache", it) }
-                    }
-                }, 0L, 1000L)
+            configObserver = module.observeConfigChanges {
+                if (live) {
+                    runCatching {
+                        val config = module.readConfig()
+                        val key = "${config?.optBoolean("active", false)}|${config?.optBoolean("force_location_enabled", false)}|${config?.optBoolean("system_hook_global_mode", false)}|${config?.optJSONArray("system_hook_packages")}"
+                        if (key != lastKey) {
+                            invalidateMethod.invoke(null)
+                            lastKey = key
+                            HookStatus.workTick("coloros_availability")
+                        }
+                    }.onFailure { HookStatus.error("ColorOS16 availability cache", it) }
+                }
             }
         } catch (error: Throwable) {
             HookStatus.error("ColorOS16 availability", error)
@@ -111,8 +107,8 @@ internal class ColorOs16LocationAvailability(
 
     override fun close() {
         live = false
-        timer?.cancel()
-        timer = null
+        configObserver?.close()
+        configObserver = null
         handles.asReversed().forEach { handle ->
             runCatching { handle.unhook() }.onFailure { HookStatus.error("ColorOS16 unhook", it) }
         }

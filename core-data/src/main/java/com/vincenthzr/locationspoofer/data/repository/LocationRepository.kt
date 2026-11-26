@@ -53,15 +53,42 @@ class LocationRepository(
             val lastLat = settingsManager.lastSpoofedLat.toDoubleOrNull() ?: 0.0
             val lastLng = settingsManager.lastSpoofedLng.toDoubleOrNull() ?: 0.0
             if (lastLat != 0.0 && lastLng != 0.0) {
+                val stored = configManager.lastConfigSnapshot()
+                val routePoints = mutableListOf<RoutePoint>()
+                stored?.optJSONArray("route_points")?.let { points ->
+                    for (index in 0 until points.length()) {
+                        val point = points.optJSONObject(index) ?: continue
+                        routePoints += RoutePoint(
+                            point.optDouble("lat", lastLat),
+                            point.optDouble("lng", lastLng)
+                        )
+                    }
+                }
                 startSpoofing(
                     context, lastLat, lastLng,
-                    "STILL", 0f, System.currentTimeMillis(),
-                    emptyList(), false,
+                    stored?.optString("sim_mode", "STILL") ?: "STILL",
+                    stored?.optDouble("sim_bearing", 0.0)?.toFloat() ?: 0f,
+                    stored?.optLong("start_timestamp", System.currentTimeMillis())
+                        ?: System.currentTimeMillis(),
+                    routePoints,
+                    stored?.optBoolean("is_route_mode", false) ?: false,
                     settingsManager.getAppCoordinateSystems(),
-                    mockWifi = settingsManager.mockWifi,
-                    mockCell = settingsManager.mockCell,
-                    mockBluetooth = settingsManager.mockBluetooth,
-                    enableJitter = settingsManager.enableJitter
+                    wifiJson = stored?.optJSONObject("wifi_json")?.toString() ?: "{}",
+                    cellJson = stored?.optJSONArray("cell_json")?.toString() ?: "[]",
+                    bluetoothJson = stored?.optJSONArray("bluetooth_json")?.toString() ?: "[]",
+                    mockWifi = stored?.optBoolean("mock_wifi", settingsManager.mockWifi)
+                        ?: settingsManager.mockWifi,
+                    mockCell = stored?.optBoolean("mock_cell", settingsManager.mockCell)
+                        ?: settingsManager.mockCell,
+                    mockBluetooth = stored?.optBoolean("mock_bluetooth", settingsManager.mockBluetooth)
+                        ?: settingsManager.mockBluetooth,
+                    enableJitter = stored?.optBoolean("enable_jitter", settingsManager.enableJitter)
+                        ?: settingsManager.enableJitter,
+                    speedMs = stored?.optDouble("speed_m_s", 0.0) ?: 0.0,
+                    stopAtDestination = stored?.optBoolean("stop_at_destination", false) ?: false,
+                    enableStepSimulation = stored?.optBoolean("enable_step_simulation", true) ?: true,
+                    stepCadenceSpm = stored?.optInt("step_cadence_spm", 165) ?: 165,
+                    isAutoCadence = stored?.optBoolean("is_auto_cadence", true) ?: true
                 )
             }
         } else if (spoofingServiceController.isRunning) {
@@ -119,7 +146,7 @@ class LocationRepository(
         rootManager.grantMockLocation()
 
         val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
-        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 20
+        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         configManager.saveConfig(
             lat,
             lng,
@@ -248,7 +275,7 @@ class LocationRepository(
         SpoofingState.bluetoothJson = bluetoothJson
         SpoofingState.enableJitter = enableJitter
         val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
-        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 20
+        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         configManager.saveConfig(
             lat,
             lng,
@@ -291,7 +318,7 @@ class LocationRepository(
             cellJson = SpoofingState.cellJson,
             bluetoothJson = SpoofingState.bluetoothJson,
             altitude = settingsManager.altitude.toDoubleOrNull() ?: 0.0,
-            satelliteCount = settingsManager.satelliteCount.toIntOrNull() ?: 20
+            satelliteCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         )
     }
 

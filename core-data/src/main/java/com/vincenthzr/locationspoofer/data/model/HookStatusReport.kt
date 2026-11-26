@@ -16,7 +16,9 @@ data class HookStatusReport(
     val configPath: String,
     val configModified: Long,
     val components: List<Component>,
-    val errors: List<String>
+    val errors: List<String>,
+    val pid: Int? = null,
+    val snapshotId: String? = null
 ) {
     enum class State {
         /**
@@ -81,7 +83,10 @@ data class HookStatusReport(
                         methods = methods?.keys()?.asSequence()?.associateWith { methods.optInt(it) }.orEmpty()
                     )
                 },
-                errors = (0 until (errors?.length() ?: 0)).map { errors!!.getString(it) }
+                errors = (0 until (errors?.length() ?: 0)).map { errors!!.getString(it) },
+                pid = json.optInt("pid").takeIf { it > 0 },
+                snapshotId = json.optJSONObject("config")?.opt("snapshot_id")
+                    .let { (it as? String)?.takeIf(String::isNotBlank) }
             )
         } catch (_: Exception) {
             null

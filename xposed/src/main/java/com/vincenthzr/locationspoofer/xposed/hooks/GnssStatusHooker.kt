@@ -88,7 +88,7 @@ internal fun LocationHooker.hookGnssStatus(classLoader: ClassLoader) {
                                 val statusObj = innerChain.args[0]
                                 val config = readConfig()
                                 if (config != null && config.optBoolean("active", false)) {
-                                    val count = config.optInt("satellite_count", 20)
+                                    val count = SatelliteProfile.count(config)
                                     val enableJitter = config.optBoolean("enable_jitter", true)
                                     val spoofedStatus = GnssFastMockEngine.getOrCreateSpoofedGnssStatus(
                                         classLoader = clazz.classLoader ?: classLoader,
@@ -185,11 +185,11 @@ internal fun LocationHooker.hookGnssStatus(classLoader: ClassLoader) {
                 val result = chain.proceed(chain.args.toTypedArray())
                 val config = readConfig()
                 if (config != null && config.optBoolean("active", false)) {
-                    val count = config.optInt("satellite_count", 20)
+                    val count = SatelliteProfile.count(config)
                     val statusObj = result ?: chain.args.firstOrNull()
                     if (statusObj != null) {
                         try {
-                            val satellites = GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count)
+                            val satellites = GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count, config?.optBoolean("enable_jitter", true) ?: true)
                             XposedHelpers.setObjectField(statusObj, "mSatellites", satellites)
                         } catch (_: Throwable) {}
                     }
@@ -208,8 +208,8 @@ internal fun LocationHooker.hookGnssStatus(classLoader: ClassLoader) {
             ) { chain, method ->
                 val config = readConfig()
                 if (config != null && config.optBoolean("active", false)) {
-                    val count = config.optInt("satellite_count", 20)
-                    return@hookMethod GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count)
+                    val count = SatelliteProfile.count(config)
+                    return@hookMethod GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count, config?.optBoolean("enable_jitter", true) ?: true)
                 }
                 return@hookMethod chain.proceed(chain.args.toTypedArray())
             }
@@ -227,8 +227,8 @@ internal fun LocationHooker.hookGnssStatus(classLoader: ClassLoader) {
 
 internal fun LocationHooker.createSpoofedGpsSatellites(classLoader: ClassLoader): Iterable<Any> {
     val config = readConfig()
-    val count = config?.optInt("satellite_count", 20) ?: 20
-    return GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count)
+    val count = SatelliteProfile.count(config)
+    return GnssFastMockEngine.getOrCreateSpoofedGpsSatellites(classLoader, count, config?.optBoolean("enable_jitter", true) ?: true)
 }
 
 // GNSS 卫星矩阵数据结构（预留，暂无调用方）

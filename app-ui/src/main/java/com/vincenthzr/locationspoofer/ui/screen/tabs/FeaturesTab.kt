@@ -13,6 +13,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,7 +54,8 @@ fun FeaturesTab(
     onNavigateToCoordinate: () -> Unit,
     onNavigateToScanner: () -> Unit,
     onNavigateToManageData: () -> Unit,
-    onNavigateToSystemHookApps: () -> Unit
+    onNavigateToSystemHookApps: () -> Unit,
+    onNavigateToRemoteWifi: () -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
     val context = LocalContext.current
@@ -181,6 +183,14 @@ fun FeaturesTab(
                 contentPadding = PaddingValues(bottom = tabBarHeight + 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                item {
+                    OutlinedCard(onClick = onNavigateToRemoteWifi, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(stringResource(R.string.remote_wifi_title), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.remote_wifi_card_desc), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
                 // 1. 采集本地数据
                 item {
                     ScannerMapCard(

@@ -29,6 +29,7 @@ import io.github.libxposed.api.*
  * 蓝牙 LE 扫描结果/设备对象构造辅助函数（纯计算，不依赖 LocationHooker 状态）。
  */
 internal fun hexStringToByteArray(s: String): ByteArray {
+    require(s.length % 2 == 0 && s.all { Character.digit(it, 16) >= 0 }) { "Invalid hexadecimal payload" }
     val len = s.length
     val data = ByteArray(len / 2)
     var i = 0
@@ -98,71 +99,29 @@ internal fun buildScanRecordBytes(name: String, hexRecord: String, address: Stri
 
         var rawPayload: ByteArray? = null
 
-        if (cleanHex.isNotEmpty() && cleanHex.length >= 2) {
+        if (cleanHex.isNotEmpty() && cleanHex.length <= 3300) {
             try {
-                val validHex = if (cleanHex.length % 2 != 0) cleanHex.substring(0, cleanHex.length - 1) else cleanHex
-                val inputBytes = hexStringToByteArray(validHex)
-
+                val inputBytes = hexStringToByteArray(cleanHex)
                 if (isValidAdStructure(inputBytes)) {
-                    // 格式 1: 完整的标准 TLV 结构广播包（例如从系统/抓包工具导出的 0201061AFF...）
+                    // Full observed AD payloads are preserved byte-for-byte.
                     rawPayload = inputBytes
-                } else if (validHex.startsWith("1AFF4C00") || validHex.startsWith("1EFF4C00")) {
-                    // 格式 2: 带有长度的厂商数据段，前面缺少 020106 Flags
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    rawPayload = flags + inputBytes
-                } else if (validHex.startsWith("FF4C00") || validHex.startsWith("FF")) {
-                    // 格式 3: 带有 Type(0xFF) 但缺少 Length 的厂商数据段
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    val lenByte = byteArrayOf(inputBytes.size.toByte())
-                    rawPayload = flags + lenByte + inputBytes
-                } else if (validHex.startsWith("4C000215") || validHex.startsWith("004C0215") || validHex.startsWith("4C00")) {
-                    // 格式 4: 纯 Apple iBeacon 厂商数据段（从 nRF Connect 等工具复制的 Manufacturer Data）
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    val mfrHeader = byteArrayOf((inputBytes.size + 1).toByte(), 0xFF.toByte())
-                    rawPayload = flags + mfrHeader + inputBytes
-                } else if (validHex.startsWith("0215") && validHex.length >= 46) {
-                    // 格式 5: 缺少 Apple 厂商 ID 的 iBeacon 数据（0215 + UUID + Major + Minor + TxPower）
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    val mfrHeader = byteArrayOf(0x1A, 0xFF.toByte(), 0x4C, 0x00)
-                    rawPayload = flags + mfrHeader + inputBytes
-                } else if (validHex.length == 32) {
-                    // 格式 6: 纯 16 字节 UUID
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    val mfrData = byteArrayOf(
-                        0x1A, 0xFF.toByte(), 0x4C, 0x00, 0x02, 0x15
-                    ) + inputBytes + byteArrayOf(0x00, 0x01, 0x00, 0x01, 0xC5.toByte())
-                    rawPayload = flags + mfrData
-                } else {
-                    // 格式 7: 其他厂商自定义数据段，自动封装 Flags + 0xFF 结构
-                    val flags = byteArrayOf(0x02, 0x01, 0x06)
-                    val mfrHeader = byteArrayOf((inputBytes.size + 1).toByte(), 0xFF.toByte())
-                    rawPayload = flags + mfrHeader + inputBytes
                 }
-            } catch (_: Throwable) {}
+            } catch (_: IllegalArgumentException) {}
         }
 
         if (rawPayload != null && rawPayload.isNotEmpty()) {
             return rawPayload
         }
 
-        // 若用户未填写，自动合成标准的 iBeacon 考勤广播包与名称结构
+        // Missing/invalid advertising data establishes no manufacturer or beacon UUID.
+        // Keep only generic flags and an explicitly supplied device name.
         val flags = byteArrayOf(0x02, 0x01, 0x06)
-        val defaultIBeacon = byteArrayOf(
-            0x1A, 0xFF.toByte(), 0x4C, 0x00, 0x02, 0x15,
-            0xFD.toByte(), 0xA5.toByte(), 0x06, 0x93.toByte(),
-            0xA4.toByte(), 0xE2.toByte(), 0x4F, 0xB1.toByte(),
-            0xAF.toByte(), 0xCF.toByte(), 0xC6.toByte(), 0xEB.toByte(),
-            0x07, 0x64, 0x78, 0x25,
-            0x00, 0x01, 0x00, 0x01, 0xC5.toByte()
-        )
-        var synthetic = flags + defaultIBeacon
-        val nameBytes = name.toByteArray(Charsets.UTF_8)
-        if (nameBytes.isNotEmpty() && synthetic.size + nameBytes.size + 2 <= 31) {
-            val nameAd = byteArrayOf((nameBytes.size + 1).toByte(), 0x09) + nameBytes
-            synthetic = synthetic + nameAd
-        }
-
-        return synthetic
+        var end = name.offsetByCodePoints(0, minOf(26, name.codePointCount(0, name.length)))
+        while (name.substring(0, end).toByteArray(Charsets.UTF_8).size > 26)
+            end -= Character.charCount(name.codePointBefore(end))
+        val nameBytes = name.substring(0, end).toByteArray(Charsets.UTF_8)
+        if (nameBytes.isEmpty()) return flags
+        return flags + byteArrayOf((nameBytes.size + 1).toByte(), if (end < name.length) 0x08 else 0x09) + nameBytes
     }
 
     // 辅助函数：安全创建 BluetoothDevice

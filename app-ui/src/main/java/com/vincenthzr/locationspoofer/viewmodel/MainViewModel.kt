@@ -43,6 +43,8 @@ class MainViewModel(
     internal val environmentDao: EnvironmentDao,
     internal val wifiRepository: WifiRepository,
     internal val opencellidClient: OpenCellIdClient,
+    internal val remoteCellRepository: com.vincenthzr.locationspoofer.data.repository.RemoteCellRepository,
+    internal val remoteEnvironmentImporter: com.vincenthzr.locationspoofer.data.repository.RemoteEnvironmentImporter,
     internal val motionController: MotionController,
     internal val context: Context
 ) : ViewModel() {
@@ -51,6 +53,7 @@ class MainViewModel(
     internal var gaitRecordingJob: Job? = null
     internal var mockCapabilitiesJob: Job? = null
     internal var environmentUpdateJob: Job? = null
+    internal var pointConfigurationJob: Job? = null
 
     val collectionRoutes = environmentDao.observeCollectionRoutes().distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())

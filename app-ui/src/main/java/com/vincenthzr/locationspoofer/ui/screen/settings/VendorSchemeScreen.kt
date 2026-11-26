@@ -27,7 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vincenthzr.locationspoofer.data.model.HookStatusReport
 import com.vincenthzr.locationspoofer.data.repository.HookStatusRepository
 import com.vincenthzr.locationspoofer.progress.AdaptationProgressSource
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
@@ -37,6 +36,7 @@ import org.koin.compose.koinInject
 import com.vincenthzr.locationspoofer.ui.BuildConfig
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.data.model.AppState
+import com.vincenthzr.locationspoofer.data.model.HookConfigCheck
 import com.vincenthzr.locationspoofer.vendor.VendorScheme
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AppColors
@@ -62,7 +62,8 @@ fun VendorSchemeScreen(
 
     // 全局方案：各系统进程写出的 Hook 运行状态报告
     val hookStatusRepository = koinInject<HookStatusRepository>()
-    var hookReports by remember { mutableStateOf<Map<String, HookStatusReport?>>(emptyMap()) }
+    var hookDiagnostic by remember { mutableStateOf<HookStatusRepository.Diagnostic?>(null) }
+    val hookReports = hookDiagnostic?.reports.orEmpty()
     var hookLoading by remember { mutableStateOf(false) }
     var showHookStatus by remember { mutableStateOf(false) }
 
@@ -70,8 +71,11 @@ fun VendorSchemeScreen(
         if (!BuildConfig.GLOBAL_SCHEME || hookLoading) return
         hookLoading = true
         scope.launch {
-            hookReports = hookStatusRepository.readAll()
-            hookLoading = false
+            try {
+                hookDiagnostic = hookStatusRepository.diagnose()
+            } finally {
+                hookLoading = false
+            }
         }
     }
 
@@ -91,6 +95,7 @@ fun VendorSchemeScreen(
     if (showHookStatus) {
         HookStatusScreen(
             reports = hookReports,
+            configCheck = hookDiagnostic?.config ?: HookConfigCheck(HookConfigCheck.State.UNAVAILABLE),
             loading = hookLoading,
             onRefresh = { refreshHookStatus() },
             debugDump = uiState.debugDumpSystemServices,
@@ -267,7 +272,10 @@ fun VendorSchemeScreen(
                             summary.first == summary.second -> AccentGreen
                             else -> AccentOrange
                         },
-                        onClick = { showHookStatus = true }
+                        onClick = {
+                            showHookStatus = true
+                            refreshHookStatus()
+                        }
                     )
                 }
 

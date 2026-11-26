@@ -8,9 +8,9 @@ import com.vincenthzr.locationspoofer.utils.CoordinateUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,6 +22,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class ConfigManager(private val context: Context, private val rootManager: RootManager) {
+
+    companion object {
+        const val TRANSPORT_PREFS = "framework_config_state"
+        const val DESIRED_CONFIG = "desired_config"
+        const val FIXTURE_OWNER = "instrumentation_fixture_owner"
+        const val FIXTURE_USER_CONFIG = "instrumentation_fixture_user_config"
+    }
 
     // system_hook_packages 是独立于每次模拟会话的常驻勾选项（在"系统级模拟应用"页面里配置），
     // 不随 lat/lng/active 这类瞬时状态一起在调用方逐层透传，这里每次发布时直接读取最新值即可。
@@ -56,7 +63,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         mockBluetooth: Boolean = true,
         enableJitter: Boolean = true,
         altitude: Double = 0.0,
-        satelliteCount: Int = 20,
+        satelliteCount: Int = 10,
         speedMs: Double = 0.0,
         stopAtDestination: Boolean = false,
         enableStepSimulation: Boolean = true,
@@ -124,6 +131,9 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
             writeLocked(json)
         }
     }
+
+    /** 返回最近一次发布的完整配置，供进程或设备重启后的恢复流程复用环境数据。 */
+    fun lastConfigSnapshot(): JSONObject? = lastJson?.let { JSONObject(it.toString()) }
 
     /** 写入坐标及其派生字段（WGS-84 / BD-09 坐标、逆地理编码地址）；移动超过 500 米才重新逆地理编码。需在 IO 线程调用 */
     fun putPosition(json: JSONObject, lat: Double, lng: Double) {
@@ -212,38 +222,75 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
 
     private val writeMutex = Mutex()
 
-    private val transportPrefs = context.getSharedPreferences("framework_config_state", Context.MODE_PRIVATE)
+    private val transportPrefs = context.getSharedPreferences(TRANSPORT_PREFS, Context.MODE_PRIVATE)
     private val publisher = FrameworkConfigPublisher()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
-    private var lastJson: JSONObject? = transportPrefs.getString("desired_config", null)?.let {
-        runCatching { JSONObject(it) }.getOrNull()
-    }
+    private var lastJson: JSONObject? = readUserConfig()
     @Volatile private var publicationPending = lastJson != null
+    private var publicationRetry: Job? = null
     private var nextCleanupAttemptAt = 0L
+
+    private fun hasFixture() = transportPrefs.contains(FIXTURE_OWNER)
+
+    private fun readUserConfig(): JSONObject? {
+        val key = if (hasFixture()) FIXTURE_USER_CONFIG else DESIRED_CONFIG
+        return transportPrefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+    }
+
+    /** Serializes short instrumentation writes with UI publication and reconnection. */
+    suspend fun <T> withFixtureConfigAccess(action: () -> T): T = writeMutex.withLock {
+        val wasFixture = hasFixture()
+        try {
+            action()
+        } finally {
+            lastJson = readUserConfig()
+            if (wasFixture && !hasFixture() && publicationPending && lastJson != null) {
+                XposedModuleStatus.mService?.let { service ->
+                    val currentPayload = runCatching {
+                        service.getRemotePreferences(FrameworkConfigChannel.GROUP)
+                            .getString(FrameworkConfigChannel.SNAPSHOT_KEY, null)
+                            ?.let { JSONObject(it).optString("payload") }
+                    }.getOrNull()
+                    if (currentPayload != lastJson.toString()) schedulePublicationRetryLocked()
+                }
+            }
+        }
+    }
 
     init {
         // StateFlow delivers an already-connected service too, so initialization order is harmless.
         scope.launch {
             XposedModuleStatus.service.collect { service ->
-                if (service != null) writeMutex.withLock {
-                    publisher.onReconnect()
-                    lastJson?.let { publishLocked(it, service) }
+                writeMutex.withLock {
+                    if (service != null) {
+                        publisher.onReconnect()
+                        if (!hasFixture()) lastJson?.let { publishLocked(it, service) }
+                    } else cancelPublicationRetryLocked()
                 }
             }
         }
-        scope.launch {
-            while (isActive) {
-                delay(3_000)
-                if (publicationPending) writeMutex.withLock {
-                    val service = XposedModuleStatus.mService
-                    if (publicationPending && service != null) lastJson?.let {
-                        publishLocked(it, service, notifyFailure = false)
-                    }
+    }
+
+    /** A failed publication owns a retry; successful/idle/disconnected states own none. */
+    private fun schedulePublicationRetryLocked() {
+        if (publicationRetry?.isActive == true) return
+        publicationRetry = scope.launch {
+            delay(3_000)
+            writeMutex.withLock {
+                publicationRetry = null
+                val service = XposedModuleStatus.mService
+                if (publicationPending && service != null && !hasFixture()) lastJson?.let {
+                    publishLocked(it, service, notifyFailure = false)
                 }
             }
         }
+    }
+
+    private fun cancelPublicationRetryLocked() {
+        publicationRetry?.cancel()
+        publicationRetry = null
     }
 
     private suspend fun write(json: JSONObject): Boolean = writeMutex.withLock { writeLocked(json) }
@@ -251,7 +298,8 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     private fun writeLocked(json: JSONObject): Boolean {
         // Remember the desired state even if a stop/pause happens while the service is disconnected.
         // Reconnection must never replay an older active session over a newer stop request.
-        if (!transportPrefs.edit().putString("desired_config", json.toString()).commit()) {
+        if (!transportPrefs.edit().putString(DESIRED_CONFIG, json.toString())
+                .remove(FIXTURE_OWNER).remove(FIXTURE_USER_CONFIG).commit()) {
             _writeFailures.tryEmit(Unit)
             return false
         }
@@ -259,6 +307,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         publicationPending = true
         val service = XposedModuleStatus.mService
         if (service == null) {
+            cancelPublicationRetryLocked()
             android.util.Log.w("LocationSpoofer", "Framework disconnected; latest configuration queued")
             _writeFailures.tryEmit(Unit)
             return false
@@ -285,6 +334,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
                 override fun deleteFile(name: String) { service.deleteRemoteFile(name) }
             })
             publicationPending = false
+            cancelPublicationRetryLocked()
             // Migration runs only after the replacement channel accepted a complete snapshot.
             val now = System.currentTimeMillis()
             if (!transportPrefs.getBoolean("legacy_files_removed", false) && now >= nextCleanupAttemptAt) {
@@ -300,6 +350,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         } catch (error: Exception) {
             android.util.Log.e("LocationSpoofer", "Framework config publication failed", error)
             publicationPending = true
+            schedulePublicationRetryLocked()
             if (notifyFailure) _writeFailures.tryEmit(Unit)
             false
         }

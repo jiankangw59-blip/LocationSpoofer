@@ -254,12 +254,12 @@ object SystemHookUtils {
         if (isGlobalMode) {
             if (uid >= 10000) {
                 if (cleanPkg != null && !EXEMPT_PACKAGES.contains(cleanPkg)) {
-                    XposedBridge.log("[SysHook] GlobalMode match: explicitPkg=$explicitPackage (cleanPkg=$cleanPkg, uid=$uid)")
+                    logWhitelistMatch("global-explicit", "[SysHook] GlobalMode match: explicitPkg=$explicitPackage (cleanPkg=$cleanPkg, uid=$uid)")
                     return true
                 }
                 val nonExempt = callingPackages.filter { !EXEMPT_PACKAGES.contains(it.substringBefore(":")) }
                 if (nonExempt.isNotEmpty()) {
-                    XposedBridge.log("[SysHook] GlobalMode match: callingPkgs=$nonExempt (uid=$uid)")
+                    logWhitelistMatch("global-calling", "[SysHook] GlobalMode match: callingPkgs=$nonExempt (uid=$uid)")
                     return true
                 }
             }
@@ -291,15 +291,8 @@ object SystemHookUtils {
         return false
     }
 
-    private val lastWhitelistLogTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
     private fun logWhitelistMatch(key: String, message: String) {
-        val now = System.currentTimeMillis()
-        val last = lastWhitelistLogTimes[key] ?: 0L
-        if (now - last > 5000L) {
-            lastWhitelistLogTimes[key] = now
-            XposedBridge.log(message)
-        }
+        XposedBridge.logOpenCellIdEvery("caller-match:$key", message, 60_000L)
     }
 
     /**
@@ -341,15 +334,10 @@ object SystemHookUtils {
             try {
                 val extras = XposedHelpers.callMethod(locObj, "getExtras") as? android.os.Bundle
                 if (extras != null) {
-                    extras.remove("mockLocation")
-                    extras.putInt("satellites", 20)
-                    extras.putInt("satellites_in_view", 20)
-                    extras.putInt("satellites_used_in_fix", 18)
+                    SatelliteProfile.apply(extras)
                 } else {
                     val bundle = android.os.Bundle()
-                    bundle.putInt("satellites", 20)
-                    bundle.putInt("satellites_in_view", 20)
-                    bundle.putInt("satellites_used_in_fix", 18)
+                    SatelliteProfile.apply(bundle)
                     XposedHelpers.callMethod(locObj, "setExtras", bundle)
                 }
             } catch (_: Throwable) {}

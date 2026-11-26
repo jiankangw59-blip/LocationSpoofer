@@ -40,7 +40,9 @@ object SensorStepHooker {
         val handler: Handler?
     )
 
-    val capturedListeners = CopyOnWriteArrayList<CapturedSensorListener>()
+    val capturedListeners = com.vincenthzr.locationspoofer.xposed.utils.DemandList<CapturedSensorListener> {
+        (XposedHelpers.module as? LocationHooker)?.notifyMotionDemandChanged()
+    }
     private val hookedListenerClasses = ConcurrentHashMap<Class<*>, Boolean>()
 
     // 真实计步器自开机以来单调递增：换会话 / 摇杆每次写配置导致 start_timestamp 变化时，

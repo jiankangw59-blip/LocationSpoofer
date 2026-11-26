@@ -65,11 +65,13 @@ class LocationApp : Application(), XposedServiceHelper.OnServiceListener {
         org.koin.java.KoinJavaComponent.get<com.vincenthzr.locationspoofer.utils.ConfigManager>(
             com.vincenthzr.locationspoofer.utils.ConfigManager::class.java
         )
+        XposedModuleStatus.beginConnecting()
         Thread {
             try {
                 XposedServiceHelper.registerListener(this@LocationApp)
             } catch (e: Throwable) {
                 e.printStackTrace()
+                XposedModuleStatus.connectionFailed()
             }
         }.start()
     }

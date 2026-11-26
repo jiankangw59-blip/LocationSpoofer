@@ -2,13 +2,19 @@ package com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions
 
 import com.vincenthzr.locationspoofer.xposed.hooks.getCurrentSpoofedMotion
 import android.location.Location
+import android.os.Handler
+import android.os.Looper
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
 import com.vincenthzr.locationspoofer.xposed.hooks.SystemHookUtils
+import com.vincenthzr.locationspoofer.xposed.hooks.SatelliteProfile
+import com.vincenthzr.locationspoofer.xposed.utils.RouteEngine
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemClassLocator
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.diagnostics.HookStatus
 import com.vincenthzr.locationspoofer.xposed.utils.XposedHelpers
 import com.vincenthzr.locationspoofer.xposed.utils.CallScope
+import com.vincenthzr.locationspoofer.xposed.utils.DemandTimer
+import com.vincenthzr.locationspoofer.xposed.utils.demandTimer
 import com.vincenthzr.locationspoofer.xposed.utils.XposedBridge
 import com.vincenthzr.locationspoofer.xposed.utils.getJitteredAccuracy
 import io.github.libxposed.api.XposedInterface
@@ -21,6 +27,7 @@ import java.util.TimerTask
 import java.util.WeakHashMap
 import java.util.function.Function
 import java.util.function.Predicate
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * ColorOS 16 (Android 16) adapter. Validation scope is documented in docs/adaptation/coloros16.md.
@@ -39,7 +46,14 @@ internal class ColorOs16LocationDelivery(
     private var updateRegistrations: Method? = null
     private val hooks = mutableListOf<XposedInterface.HookHandle>()
     @Volatile private var enabled = false
-    private var timer: Timer? = null
+    private var output: DemandTimer? = null
+    private var configObservation: AutoCloseable? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val reconciliationQueued = AtomicBoolean(false)
+    private val reconcileTask = Runnable {
+        reconciliationQueued.set(false)
+        if (enabled && !module.retiringGeneration) guarded("demand reconciliation") { reconcileDemand() }
+    }
     private lateinit var registrationClass: Class<*>
     private lateinit var getIdentity: Method
     private lateinit var getUid: Method
@@ -53,6 +67,9 @@ internal class ColorOs16LocationDelivery(
     private lateinit var internalField: Field
     private lateinit var ownerField: Field
     private lateinit var isProvider: Method
+    private lateinit var registrationsField: Field
+    private lateinit var multiplexerLockField: Field
+    private lateinit var registrationIsActive: Method
 
     fun install(): Boolean {
         try {
@@ -62,6 +79,7 @@ internal class ColorOs16LocationDelivery(
             registrationClass = Class.forName("$managerName\$Registration", false, loader)
             val continuous = Class.forName("$managerName\$LocationRegistration", false, loader)
             val current = Class.forName("$managerName\$GetCurrentLocationListenerRegistration", false, loader)
+            val baseRegistration = Class.forName("com.android.server.location.listeners.ListenerRegistration", false, loader)
             val identity = Class.forName("android.location.util.identity.CallerIdentity", false, loader)
             val result = Class.forName("android.location.LocationResult", false, loader)
             val request = Class.forName("android.location.LastLocationRequest", false, loader)
@@ -81,6 +99,10 @@ internal class ColorOs16LocationDelivery(
             internalField = findField(manager, "mLocationManagerInternal")
             ownerField = findField(registrationClass, "this\$0")
             isProvider = internalField.type.getMethod("isProvider", String::class.java, identity).accessible()
+            registrationsField = findField(manager, "mRegistrations")
+            multiplexerLockField = findField(manager, "mMultiplexerLock")
+            registrationIsActive = findMethod(baseRegistration, "isActive")
+            val activeChanged = findMethod(manager, "onRegistrationActiveChanged", baseRegistration)
             val added = manager.getDeclaredMethod("onRegistrationAdded", Any::class.java, registrationClass)
             val reported = manager.getDeclaredMethod("onReportLocation", result)
             val getLast = manager.getDeclaredMethod("getLastLocation", request, identity, Int::class.javaPrimitiveType)
@@ -101,19 +123,63 @@ internal class ColorOs16LocationDelivery(
                     isTarget(ownerField.get(registration), getIdentity.invoke(registration), config)) args[2] = true
                 chain.proceed(args)
             }
-            check(module.deoptimize(active)) { "Unable to deoptimize provider activation" }
-            check(module.deoptimize(manager.getDeclaredMethod("isActive", registrationClass))) {
-                "Unable to deoptimize registration activation"
+            // PLQ110 calls the typed isActive through a generated bridge from the
+            // private multiplexer dispatcher. Deoptimizing only the typed overload
+            // leaves an already compiled/inlined caller able to bypass the hook.
+            for (entry in manager.declaredMethods.filter { it.name == "isActive" }) {
+                check(module.deoptimize(entry)) { "Unable to deoptimize provider activation ${entry.parameterTypes.toList()}" }
+            }
+            for (entry in activeChanged.declaringClass.declaredMethods.filter {
+                it.name in setOf("onRegistrationActiveChanged", "replaceRegistration", "putRegistration",
+                    "updateRegistration", "updateRegistrations", "removeRegistration")
+            }) {
+                check(module.deoptimize(entry)) { "Unable to deoptimize registration dispatcher ${entry.name}" }
+            }
+            for (entry in manager.declaredMethods.filter { it.name == "registerLocationRequest" }) {
+                check(module.deoptimize(entry)) { "Unable to deoptimize provider registration" }
             }
 
             hook(added) { chain ->
                 val original = chain.proceed(chain.args.toTypedArray())
                 chain.thisObject?.let { managers.add(it) }
+                HookStatus.workEvent("coloros_location_registration_added")
+                requestReconciliation()
+                original
+            }
+            val registrationEvents = manager.declaredMethods.filter {
+                it.name in setOf("onRegistrationRemoved", "onRegistrationActive", "onRegistrationInactive") &&
+                    it.parameterTypes.any { p -> p == registrationClass }
+            }
+            check(registrationEvents.any { it.name == "onRegistrationRemoved" }) {
+                "Registration removal event unavailable"
+            }
+            for (event in registrationEvents) hook(event) { chain ->
+                val original = chain.proceed(chain.args.toTypedArray())
+                chain.thisObject?.let { managers.add(it) }
+                HookStatus.workEvent("coloros_location_registration_removed")
+                requestReconciliation()
+                original
+            }
+            // This ROM has no onRegistrationActive/Inactive manager overrides.
+            // This private dispatcher is the actual add/remove/permission/power-state
+            // activation path. Keep the original decision and only observe its result.
+            hook(activeChanged) { chain ->
+                val relevant = chain.thisObject != null && manager.isInstance(chain.thisObject)
+                val registration = chain.args.firstOrNull()
+                val before = if (relevant && registration != null) registrationIsActive.invoke(registration) else null
+                val original = chain.proceed(chain.args.toTypedArray())
+                if (relevant) {
+                    chain.thisObject?.let { managers.add(it) }
+                    HookStatus.workTick("coloros_location_active_event")
+                    val after = registration?.let { registrationIsActive.invoke(it) }
+                    if (before != after) HookStatus.workEvent("coloros_location_active_transition")
+                    requestReconciliation()
+                }
                 original
             }
             hook(reported) { chain ->
                 // Observe existing managers after a hot reload; never rewrite provider input.
-                chain.thisObject?.let { managers.add(it) }
+                if (chain.thisObject?.let { managers.add(it) } == true) requestReconciliation()
                 chain.proceed(chain.args.toTypedArray())
             }
             hook(getLast) { chain ->
@@ -162,13 +228,18 @@ internal class ColorOs16LocationDelivery(
             check(module.deoptimize(getLast)) { "Unable to deoptimize getLastLocation" }
 
             enabled = true
-            timer = Timer("LocationSpoofer-ColorOS16", true).apply {
-                schedule(object : TimerTask() {
-                    override fun run() {
-                        if (enabled) guarded("heartbeat") { tick() }
-                    }
-                }, 1000L, 1000L)
+            output = module.demandTimer("coloros_location", 1000L) {
+                if (enabled) guarded("location output") { tick() }
             }
+            // Existing registrations survive hot reload. Discover managers once; subsequent
+            // demand changes come from the framework's own registration lifecycle hooks.
+            guarded("existing providers") {
+                val service = Class.forName("android.os.ServiceManager").getDeclaredMethod("getService", String::class.java)
+                    .invoke(null, "location") ?: return@guarded
+                val existing = findField(service.javaClass, "mProviderManagers").get(service)
+                (existing as? Collection<*>)?.filterNotNull()?.forEach { managers.add(it) }
+            }
+            configObservation = module.observeConfigChanges { requestReconciliation() }
             return true
         } catch (error: Throwable) {
             HookStatus.error("ColorOS16 location delivery", error)
@@ -178,18 +249,53 @@ internal class ColorOs16LocationDelivery(
         }
     }
 
-    private fun tick() {
+    private fun requestReconciliation() {
+        if (!enabled || module.retiringGeneration || !reconciliationQueued.compareAndSet(false, true)) return
+        if (!handler.post(reconcileTask)) reconciliationQueued.set(false)
+    }
+
+    /** Called only for configuration and registration events, never by a periodic timer. */
+    private fun reconcileDemand() {
+        HookStatus.workTick("coloros_location_reconcile")
         val config = module.readConfig()
         val snapshot = synchronized(managers) { managers.toList() }
         val key = listOf(config?.optBoolean("active"), config?.optBoolean("force_location_enabled", false),
             config?.optBoolean("system_hook_global_mode"), config?.optJSONArray("system_hook_packages")).joinToString("|")
         if (key != policyKey) {
+            policyKey = key
             snapshot.forEach { owner -> guarded("activation refresh") {
                 updateRegistrations?.invoke(owner, Predicate<Any> { true })
             } }
-            policyKey = key
         }
-        if (config == null || !config.optBoolean("active", false)) return
+        var wanted = false
+        if (config != null && config.optBoolean("active", false)) {
+            for (owner in snapshot) guarded("active demand") {
+                // Copy only immutable identity/state under the native lock. In particular,
+                // target checks can use PackageManager/Binder and must happen after release.
+                val registrations = synchronized(multiplexerLockField.get(owner)) {
+                    val registrations = registrationsField.get(owner) as Map<*, *>
+                    registrations.values.filterNotNull().map { registration ->
+                        Pair(getIdentity.invoke(registration), registrationIsActive.invoke(registration) == true)
+                    }
+                }
+                for ((identity, active) in registrations) {
+                        if (!isTarget(owner, identity, config)) continue
+
+                        HookStatus.workTick("coloros_location_target_seen")
+                        if (active) {
+                            wanted = true
+                            HookStatus.workTick("coloros_location_target_active")
+                        } else HookStatus.workTick("coloros_location_target_inactive")
+                }
+            }
+        }
+        output?.setRequired(enabled && !module.retiringGeneration && wanted)
+    }
+
+    private fun tick() {
+        val config = module.readConfig() ?: return
+        if (!config.optBoolean("active", false)) return
+        val snapshot = synchronized(managers) { managers.toList() }
         for (owner in snapshot) {
             guarded("provider heartbeat") {
                 // Use Android's multiplexer lock, reentrancy guard and active-registration
@@ -228,7 +334,7 @@ internal class ColorOs16LocationDelivery(
         val motion = module.getCurrentSpoofedMotion("WGS-84") ?: return null
         val provider = nameField.get(owner) as String
         return (SystemHookUtils.buildFakeLocation(
-            loader, provider, motion, config.optDouble("altitude", 25.0), module.getJitteredAccuracy()
+            loader, provider, motion, RouteEngine.realisticAltitude(config), module.getJitteredAccuracy()
         ) as? Location)?.also { applySatelliteExtras(it, config) }
     }
 
@@ -240,7 +346,7 @@ internal class ColorOs16LocationDelivery(
         for (item in locations) {
             val location = item as Location
             SystemHookUtils.applyFakeLocationFields(
-                location, motion, config.optDouble("altitude", 25.0), module.getJitteredAccuracy()
+                location, motion, RouteEngine.realisticAltitude(config), module.getJitteredAccuracy()
             )
             location.removeMslAltitude()
             location.removeMslAltitudeAccuracy()
@@ -250,12 +356,8 @@ internal class ColorOs16LocationDelivery(
     }
 
     private fun applySatelliteExtras(location: Location, config: JSONObject) {
-        val satellites = config.optInt("satellite_count", 20).coerceIn(4, 32)
         location.extras = android.os.Bundle(location.extras ?: android.os.Bundle()).apply {
-            putInt("satellites", satellites)
-            putInt("satellites_in_view", satellites)
-            putInt("satellites_visible", satellites)
-            putInt("satellites_used_in_fix", satellites.coerceAtMost(12))
+            SatelliteProfile.apply(this, SatelliteProfile.count(config))
         }
     }
 
@@ -277,8 +379,12 @@ internal class ColorOs16LocationDelivery(
 
     override fun close() {
         enabled = false
-        timer?.cancel()
-        timer = null
+        configObservation?.close()
+        configObservation = null
+        handler.removeCallbacks(reconcileTask)
+        reconciliationQueued.set(false)
+        output?.close()
+        output = null
         hooks.asReversed().forEach { handle -> runCatching { handle.unhook() } }
         hooks.clear()
         synchronized(managers) { managers.toList() }.forEach { owner -> guarded("restore activation") {

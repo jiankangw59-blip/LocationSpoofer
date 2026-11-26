@@ -75,183 +75,79 @@ internal fun LocationHooker.hookSystemTelephonyService(classLoader: ClassLoader)
         return
     }
 
-    // =========================================================================
-    // 1. getAllCellInfo：向目标应用派发伪造基站列表 (GSM/LTE/5G NR)
-    // =========================================================================
-    try {
-        XposedHelpers.hookAllMethods(phoneServiceClass, "getAllCellInfo") { chain, _ ->
-            val config = readConfig() ?: return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            if (!config.optBoolean("active", false)) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-            val isTarget = SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config)
-
-            if (!isTarget) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val mockCell = config.optBoolean("mock_cell", true)
-            if (!mockCell) {
-                // 与 Wi-Fi 一致：开关关闭时不能把真实基站信息透传给已被模拟 GPS 覆盖的目标应用
-                // （会暴露真实城市/地区，与伪造坐标矛盾触发风控），也不伪造假数据，直接返回空列表。
-                sysLog("[SysCell] getAllCellInfo suppressed (mock_cell off) for ${explicitPkg ?: "caller"}")
-                return@hookAllMethods java.util.ArrayList<Any>()
-            }
-
-            val lat = config.optDouble("lat", 0.0)
-            val lng = config.optDouble("lng", 0.0)
-
-            try {
-                val fakeCellList = buildFakeCellInfoList(classLoader, lat, lng, config)
-                sysLog("[SysCell] Dispatched ${fakeCellList.size} fake CellInfo items to ${explicitPkg ?: "caller"}"
-                )
-                return@hookAllMethods fakeCellList
-            } catch (e: Throwable) {
-                sysLog("[SysCell] buildFakeCellInfoList failed: $e")
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-        }
-        sysLog("[SysCell] PhoneInterfaceManager.getAllCellInfo hooked")
-    } catch (e: Throwable) {
-        sysLog("[SysCell] hook getAllCellInfo failed: $e")
-    }
-
-    // =========================================================================
-    // 2. getCellLocation：向目标应用派发对应伪造位置的 CellLocation / Bundle
-    // =========================================================================
-    try {
-        XposedHelpers.hookAllMethods(phoneServiceClass, "getCellLocation") { chain, method ->
-            val config = readConfig() ?: return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            if (!config.optBoolean("active", false)) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-            val isTarget = SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config)
-
-            if (!isTarget) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val mockCell = config.optBoolean("mock_cell", true)
-
-            val lat = config.optDouble("lat", 0.0)
-            val lng = config.optDouble("lng", 0.0)
-
-            try {
-                // 开关关闭时用 -1（Android 约定的"未知/无基站信息"哨兵值）代替真实 lac/cid，
-                // 而不是放行真实基站坐标——与 mock_cell 关闭时 getAllCellInfo 返回空列表同一语义。
-                val lac = if (mockCell) ((lat * 100).toInt().coerceAtLeast(1000) % 65535) else -1
-                val cid = if (mockCell) ((lng * 1000).toInt().coerceAtLeast(10000) % 268435455) else -1
-
-                val targetMethod = method as? java.lang.reflect.Method
-                val returnType = targetMethod?.returnType
-                if (returnType != null) {
-                    if (returnType == android.os.Bundle::class.java || returnType.name == "android.os.Bundle") {
-                        val bundle = android.os.Bundle()
-                        bundle.putInt("lac", lac)
-                        bundle.putInt("cid", cid)
-                        bundle.putInt("psc", -1)
-                        sysLog("[SysCell] Dispatched fake CellLocation Bundle to ${explicitPkg ?: "caller"} (lac=$lac, cid=$cid)")
-                        return@hookAllMethods bundle
-                    }
-
-                    if (returnType.name.contains("CellIdentity")) {
-                        try {
-                            val cellIdentityGsmClass = XposedHelpers.findClassIfExists("android.telephony.CellIdentityGsm", classLoader)
-                                ?: XposedHelpers.findClassIfExists("android.telephony.CellIdentityGsm", android.telephony.CellIdentity::class.java.classLoader)
-                            if (cellIdentityGsmClass != null) {
-                                val fakeIdentity = this@hookSystemTelephonyService.constructCellIdentityByType(
-                                    "GSM", cellIdentityGsmClass, 460, "460", 0, "00", lac, cid, 0
-                                )
-                                if (fakeIdentity != null && returnType.isInstance(fakeIdentity)) {
-                                    sysLog("[SysCell] Dispatched fake CellIdentity to ${explicitPkg ?: "caller"} (lac=$lac, cid=$cid)")
-                                    return@hookAllMethods fakeIdentity
-                                }
-                            }
-                        } catch (t: Throwable) {
-                            sysLog("[SysCell] construct fake CellIdentity failed: $t")
-                        }
-                    }
-
-                    if (returnType.name.contains("CellLocation")) {
-                        try {
-                            val gsmCellLocationClass = XposedHelpers.findClass(
-                                "android.telephony.gsm.GsmCellLocation", classLoader
-                            )
-                            val fakeLocation = XposedHelpers.newInstance(gsmCellLocationClass)
-                            XposedHelpers.callMethod(fakeLocation, "setLacAndCid", lac, cid)
-                            if (returnType.isInstance(fakeLocation)) {
-                                sysLog("[SysCell] Dispatched fake CellLocation object to ${explicitPkg ?: "caller"} (lac=$lac, cid=$cid)")
-                                return@hookAllMethods fakeLocation
-                            }
-                        } catch (t: Throwable) {
-                            sysLog("[SysCell] construct fake CellLocation failed: $t")
-                        }
-                    }
-                }
-            } catch (e: Throwable) {
-                sysLog("[SysCell] build fake CellLocation failed: $e")
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-        }
-        sysLog("[SysCell] PhoneInterfaceManager.getCellLocation hooked")
-    } catch (e: Throwable) {
-        sysLog("[SysCell] hook getCellLocation failed: $e")
-    }
-
-    // =========================================================================
-    // 3. requestCellInfoUpdate：拦截现代 Android 异步基站更新请求（高德/淘宝核心）
-    // =========================================================================
-    try {
-        XposedHelpers.hookAllMethods(phoneServiceClass, "requestCellInfoUpdate") { chain, _ ->
-            val config = readConfig() ?: return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            if (!config.optBoolean("active", false)) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-            val isTarget = SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config)
-
-            if (!isTarget) {
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-
-            val mockCell = config.optBoolean("mock_cell", true)
-
-            val lat = config.optDouble("lat", 0.0)
-            val lng = config.optDouble("lng", 0.0)
-
-            try {
-                val callback = chain.args.firstOrNull { arg ->
-                    arg != null && (
-                        LocationHooker.hasTypeByName(arg.javaClass, "android.telephony.ICellInfoCallback") ||
-                        arg.javaClass.name.contains("CellInfoCallback")
-                    )
-                }
-                if (callback != null) {
-                    // 开关关闭时投递空列表而不是放行真实回调，避免真实基站信息通过异步回调泄露
-                    val fakeCellList = if (mockCell) buildFakeCellInfoList(classLoader, lat, lng, config) else java.util.ArrayList<Any>()
-                    val onCellInfoMethod = callback.javaClass.methods.firstOrNull { it.name == "onCellInfo" }
-                    if (onCellInfoMethod != null) {
-                        onCellInfoMethod.invoke(callback, fakeCellList)
-                        sysLog("[SysCell] Intercepted requestCellInfoUpdate for ${explicitPkg ?: "caller"}, dispatched ${fakeCellList.size} fake cells directly"
-                        )
-                        return@hookAllMethods null
-                    }
-                }
-            } catch (e: Throwable) {
-                sysLog("[SysCell] intercept requestCellInfoUpdate failed: $e")
-            }
+    XposedHelpers.hookAllMethods(phoneServiceClass, "getAllCellInfo") { chain, _ ->
+        val config = readConfig()
+        val pkg = SystemHookUtils.extractPackageName(chain.args)
+        if (config == null || !SystemHookUtils.isTargetCaller(chain.thisObject, pkg, config))
             return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+        // Keep native permission, user and AppOps decisions, including soft-denied empty results.
+        val original = chain.proceed(chain.args.toTypedArray())
+        if ((original as? List<*>)?.isNotEmpty() != true) return@hookAllMethods original
+        if (!config.optBoolean("mock_cell", true)) return@hookAllMethods java.util.ArrayList<Any>()
+        try { buildFakeCellInfoList(classLoader, config.optDouble("lat"), config.optDouble("lng"), config) }
+        catch (error: Throwable) {
+            HookStatus.error("CellInfo transformation", error)
+            java.util.ArrayList<Any>()
         }
-        sysLog("[SysCell] PhoneInterfaceManager.requestCellInfoUpdate hooked")
-    } catch (e: Throwable) {
-        sysLog("[SysCell] hook requestCellInfoUpdate failed: $e")
     }
 
+    XposedHelpers.hookAllMethods(phoneServiceClass, "getCellLocation") { chain, executable ->
+        val config = readConfig()
+        val pkg = SystemHookUtils.extractPackageName(chain.args)
+        if (config == null || !SystemHookUtils.isTargetCaller(chain.thisObject, pkg, config))
+            return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+        val original = chain.proceed(chain.args.toTypedArray()) ?: return@hookAllMethods null
+        if (!config.optBoolean("mock_cell", true)) return@hookAllMethods null
+        try {
+            val cells = buildFakeCellInfoList(classLoader, config.optDouble("lat"), config.optDouble("lng"), config)
+            val serving = cells.firstOrNull { XposedHelpers.callMethod(it, "isRegistered") == true }
+                ?: return@hookAllMethods null
+            val identity = XposedHelpers.callMethod(serving, "getCellIdentity") ?: return@hookAllMethods null
+            val returnType = (executable as java.lang.reflect.Method).returnType
+            if (returnType.isInstance(identity)) return@hookAllMethods identity
+            val cellLocation = XposedHelpers.callMethod(identity, "asCellLocation") ?: return@hookAllMethods null
+            if (returnType.isInstance(cellLocation)) return@hookAllMethods cellLocation
+            if (returnType == android.os.Bundle::class.java) {
+                val bundle = android.os.Bundle()
+                XposedHelpers.callMethod(cellLocation, "fillInNotifierBundle", bundle)
+                return@hookAllMethods bundle
+            }
+            null
+        } catch (error: Throwable) {
+            HookStatus.error("Serving cell transformation", error)
+            null
+        }
+    }
+
+    XposedHelpers.hookAllMethods(phoneServiceClass, "requestCellInfoUpdate") { chain, _ ->
+        routeCellInfoRequest(chain, classLoader)
+    }
+    val projection = RadioStateProjection(this, classLoader)
+    for (name in listOf("getDataNetworkTypeForSubscriber", "getNetworkTypeForSubscriber", "getVoiceNetworkTypeForSubscriber",
+            "getDataNetworkType", "getNetworkType", "getVoiceNetworkType", "getServiceStateForSubscriber", "getServiceStateForSlot", "getServiceState", "getSignalStrength")) {
+        XposedHelpers.hookAllMethods(phoneServiceClass, name) { chain, _ ->
+            val original = chain.proceed(chain.args.toTypedArray())
+            val config = readConfig()
+            val pkg = SystemHookUtils.extractPackageName(chain.args)
+            if (original == null || config == null || !SystemHookUtils.isTargetCaller(chain.thisObject, pkg, config))
+                return@hookAllMethods original
+            try {
+                when {
+                    name.contains("NetworkType") -> if (original == 0) 0 else projection.network(config)
+                    name.startsWith("getServiceState") -> projection.service(original, config)
+                    name == "getSignalStrength" -> projection.signal(config)
+                    else -> original
+                }
+            } catch (error: Throwable) {
+                HookStatus.error("Radio state projection/$name", error)
+                when {
+                    name.contains("NetworkType") -> 0
+                    name.startsWith("getServiceState") -> XposedHelpers.newInstance(XposedHelpers.findClass("android.telephony.ServiceState", classLoader))
+                    else -> XposedHelpers.newInstance(XposedHelpers.findClass("android.telephony.SignalStrength", classLoader))
+                }
+            }
+        }
+    }
     isTelephonyServiceHooked = true
 }
 

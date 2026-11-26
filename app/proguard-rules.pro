@@ -41,6 +41,7 @@
 # Models / Utils
 -keep class com.vincenthzr.locationspoofer.utils.ConfigManager { *; }
 -keep class com.vincenthzr.locationspoofer.utils.LSPosedManager { *; }
+-keep class com.vincenthzr.locationspoofer.utils.FeedMeProxyCommand { public static void main(java.lang.String[]); }
 -keep class com.vincenthzr.locationspoofer.provider.** { *; }
 -keep class com.vincenthzr.locationspoofer.data.** { *; }
 -keepclassmembers class com.vincenthzr.locationspoofer.data.** { *; }

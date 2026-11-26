@@ -34,6 +34,7 @@ import com.vincenthzr.locationspoofer.ui.liquid.FloatingBottomBarItem
 import com.vincenthzr.locationspoofer.ui.screen.spoofing.SpoofingIntent
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.viewmodel.MainViewModel
+import com.vincenthzr.locationspoofer.viewmodel.selectCollectedLocation
 import com.vincenthzr.locationspoofer.viewmodel.UpdateViewModel
 import com.vincenthzr.locationspoofer.viewmodel.getIgnoredVersion
 import com.vincenthzr.locationspoofer.viewmodel.handleSpoofingIntent
@@ -74,7 +75,8 @@ enum class MainSubScreen {
     MotionRealism,
     BackgroundKeepAlive,
     EnvTokens,
-    SystemHookApps
+    SystemHookApps,
+    RemoteWifi
 }
 
 @Composable
@@ -87,6 +89,7 @@ fun MainScaffoldScreen(
     var currentSubScreen by remember { mutableStateOf(MainSubScreen.None) }
     var activeSubScreen by remember { mutableStateOf(MainSubScreen.None) }
     var mapController by remember { mutableStateOf<AppMapController?>(null) }
+    var pendingImportedLocationId by remember { mutableStateOf<Long?>(null) }
     val currentSelectedTab by rememberUpdatedState(selectedTab)
     val isDark = isSystemInDarkTheme()
     val updateViewModel: UpdateViewModel = koinViewModel()
@@ -129,6 +132,17 @@ fun MainScaffoldScreen(
         if (currentSubScreen != MainSubScreen.None) {
             activeSubScreen = currentSubScreen
         }
+    }
+
+    LaunchedEffect(pendingImportedLocationId, uiState.pinnedCollectedLocationId, mapController) {
+        val importedId = pendingImportedLocationId ?: return@LaunchedEffect
+        if (uiState.pinnedCollectedLocationId != importedId) return@LaunchedEffect
+        val controller = mapController ?: return@LaunchedEffect
+        val latitude = uiState.latitudeInput.toDoubleOrNull() ?: return@LaunchedEffect
+        val longitude = uiState.longitudeInput.toDoubleOrNull() ?: return@LaunchedEffect
+        selectedTab = BottomTab.Location.ordinal
+        controller.animateCamera(latitude, longitude, 17.5f)
+        pendingImportedLocationId = null
     }
 
     // 针对非首页 Tab（路线/功能/信息）的系统返回拦截：返回到定位首页
@@ -214,9 +228,12 @@ fun MainScaffoldScreen(
                         onMapReady = { controller ->
                             mapController = controller
                             controller.disableUiControls()
-                            controller.setMapType(uiState.mapType)
-                            val initLat = uiState.latitudeInput.toDoubleOrNull() ?: 39.9042
-                            val initLng = uiState.longitudeInput.toDoubleOrNull() ?: 116.4074
+                            // The SDK retains this callback from AndroidView.factory while
+                            // persisted coordinates finish loading. Read the current state.
+                            val readyState = viewModel.uiState.value
+                            controller.setMapType(readyState.mapType)
+                            val initLat = readyState.latitudeInput.toDoubleOrNull() ?: 39.9042
+                            val initLng = readyState.longitudeInput.toDoubleOrNull() ?: 116.4074
                             controller.moveCamera(initLat, initLng, 15f)
 
                             controller.setOnCameraChangeListener { lat, lng ->
@@ -321,7 +338,8 @@ fun MainScaffoldScreen(
                             },
                             onNavigateToScanner = { currentSubScreen = MainSubScreen.ScannerMap },
                             onNavigateToManageData = { currentSubScreen = MainSubScreen.ManageData },
-                            onNavigateToSystemHookApps = { currentSubScreen = MainSubScreen.SystemHookApps }
+                            onNavigateToSystemHookApps = { currentSubScreen = MainSubScreen.SystemHookApps },
+                            onNavigateToRemoteWifi = { currentSubScreen = MainSubScreen.RemoteWifi }
                         )
 
                         BottomTab.Info.ordinal -> com.vincenthzr.locationspoofer.ui.screen.tabs.InfoTab(
@@ -363,6 +381,17 @@ fun MainScaffoldScreen(
                     .background(MaterialTheme.colorScheme.background)
             ) {
                 when (subScreenToRender) {
+                    MainSubScreen.RemoteWifi -> RemoteWifiQueryScreen(
+                        initialLatitude = uiState.latitudeInput.toDoubleOrNull(),
+                        initialLongitude = uiState.longitudeInput.toDoubleOrNull(),
+                        onImported = { id ->
+                            pendingImportedLocationId = id
+                            viewModel.selectCollectedLocation(id)
+                            currentSubScreen = MainSubScreen.None
+                        },
+                        onBack = { currentSubScreen = MainSubScreen.None }
+                    )
+
                     MainSubScreen.CoordinateConfig -> AppCoordinateScreen(
                         viewModel = viewModel,
                         uiState = uiState,

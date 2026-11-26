@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -36,48 +37,55 @@ internal fun MainViewModel.startSpoofing() {
         return
     }
 
-    settingsRepository.isSpoofingActive = true
-    settingsRepository.lastSpoofedLat = lat.toString()
-    settingsRepository.lastSpoofedLng = lng.toString()
+    pointConfigurationJob?.cancel()
+    pointConfigurationJob = viewModelScope.launch {
+        try {
+            _uiState.update { it.copy(isSavingConfig = true) }
 
-    viewModelScope.launch {
-        _uiState.update { it.copy(isSavingConfig = true) }
+            if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng)) {
+                fetchRemoteWifiSync(lat, lng)
+            }
+            if (state.mockCell && !hasLocalCellsWithin50m(lat, lng)) {
+                fetchRemoteCellsSync(lat, lng)
+            }
 
-        if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng)) {
-            fetchWifiFromWigleSync(lat, lng)
-        }
-        if (state.mockCell && !hasLocalCellsWithin50m(lat, lng)) {
-            fetchCellFromOpenCellIdSync(lat, lng)
-        }
+            evaluateMockCapabilitiesSuspend(lat, lng)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (!configurationTargetMatches(lat, lng)) return@launch
 
-        evaluateMockCapabilitiesSuspend(lat, lng)
+            val updatedState = _uiState.value
+            settingsRepository.isSpoofingActive = true
+            settingsRepository.lastSpoofedLat = lat.toString()
+            settingsRepository.lastSpoofedLng = lng.toString()
+            val now = System.currentTimeMillis()
+            locationRepository.startSpoofing(
+                context, lat, lng,
+                "STILL", 0f, now,
+                emptyList(), false,
+                updatedState.appCoordinateSystems,
+                updatedState.collectedWifiJson,
+                updatedState.collectedCellJson,
+                updatedState.collectedBluetoothJson,
+                updatedState.mockWifi && updatedState.canMockWifi,
+                updatedState.mockCell,
+                updatedState.mockBluetooth && updatedState.canMockBluetooth,
+                updatedState.enableJitter
+            )
+            motionController.onStaticStarted(lat, lng)
 
-        val updatedState = _uiState.value
-        val now = System.currentTimeMillis()
-        locationRepository.startSpoofing(
-            context, lat, lng,
-            "STILL", 0f, now,
-            emptyList(), false,
-            updatedState.appCoordinateSystems,
-            updatedState.collectedWifiJson,
-            updatedState.collectedCellJson,
-            updatedState.collectedBluetoothJson,
-            updatedState.mockWifi && updatedState.canMockWifi,
-            updatedState.mockCell,
-            updatedState.mockBluetooth && updatedState.canMockBluetooth,
-            updatedState.enableJitter
-        )
-        motionController.onStaticStarted(lat, lng)
+            // 稍作等待，确保 root shell 完全同步到磁盘
+            kotlinx.coroutines.delay(200)
 
-        // 稍作等待，确保 root shell 完全同步到磁盘
-        kotlinx.coroutines.delay(200)
+            if (updatedState.restartAppsOnSpoof) {
+                restartHookedAppsSilently()
+            }
 
-        if (updatedState.restartAppsOnSpoof) {
-            restartHookedAppsSilently()
-        }
-
-        _uiState.update {
-            it.copy(isSpoofingActive = true, isSavingConfig = false)
+            _uiState.update {
+                it.copy(isSpoofingActive = true, isSavingConfig = false)
+            }
+        } finally {
+            if (pointConfigurationJob == kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job])
+                _uiState.update { it.copy(isSavingConfig = false) }
         }
     }
 }
@@ -99,7 +107,6 @@ private suspend fun MainViewModel.restartHookedAppsSilently() {
     }
     val targetPackages = mutableSetOf<String>()
     // 1. LSPosed 传统作用域勾选的应用
-    targetPackages.addAll(lsposedManager.getHookedApps(context).map { it.packageName })
     // 2. 系统级 Hook 目标应用包名列表
     targetPackages.addAll(settingsRepository.getSystemHookPackages())
 
@@ -125,13 +132,15 @@ private suspend fun MainViewModel.restartHookedAppsSilently() {
 
 internal fun MainViewModel.stopSpoofing() {
     settingsRepository.isSpoofingActive = false
+    pointConfigurationJob?.cancel()
+    pointConfigurationJob = null
     locationSyncJob?.cancel()
     locationSyncJob = null
     motionController.onStopped()
     viewModelScope.launch {
         locationRepository.stopSpoofing(context)
         _uiState.update {
-            it.copy(isSpoofingActive = false)
+            it.copy(isSpoofingActive = false, isSavingConfig = false)
         }
     }
 }

@@ -39,6 +39,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import java.lang.reflect.*
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LocationHooker : XposedModule() {
     init {
@@ -59,8 +60,7 @@ class LocationHooker : XposedModule() {
     @Volatile
     internal var environmentHooksInstalled = false
 
-    @Volatile
-    internal var systemHooksInstalled = false
+    private val systemHooksInstalled = AtomicBoolean(false)
 
     @Volatile
     internal var isSystemServerProcess = false
@@ -73,11 +73,27 @@ class LocationHooker : XposedModule() {
 
     // 用于跟踪活动的 Android LocationListener，实现动态主动欺骗
     // 使用 CopyOnWriteArrayList 和强引用，防止 GC 移除监听器
-    internal val capturedLocationListeners = CopyOnWriteArrayList<Any>()
-    internal val capturedAMapListeners = CopyOnWriteArrayList<Any>()
-    internal val capturedBaiduListeners = CopyOnWriteArrayList<Any>()
-    internal val capturedTencentListeners = CopyOnWriteArrayList<Any>()
-    internal val capturedFusedLocationCallbacks = CopyOnWriteArrayList<Any>()
+    internal val capturedLocationListeners = DemandList<Any> { notifyMotionDemandChanged() }
+    internal val capturedAMapListeners = DemandList<Any> { notifyMotionDemandChanged() }
+    internal val capturedBaiduListeners = DemandList<Any> { notifyMotionDemandChanged() }
+    internal val capturedTencentListeners = DemandList<Any> { notifyMotionDemandChanged() }
+    internal val capturedFusedLocationCallbacks = DemandList<Any> { notifyMotionDemandChanged() }
+
+    private val configObservers = CopyOnWriteArrayList<() -> Unit>()
+
+    /** Register before reading current config so a racing publication cannot be missed. */
+    internal fun observeConfigChanges(listener: () -> Unit): AutoCloseable {
+        if (retiringGeneration) return AutoCloseable { }
+        configObservers.add(listener)
+        if (retiringGeneration) configObservers.remove(listener)
+        else runConfigObserver(listener)
+        return AutoCloseable { configObservers.remove(listener) }
+    }
+
+    private fun runConfigObserver(listener: () -> Unit) {
+        if (!retiringGeneration) runCatching { listener() }
+            .onFailure { HookStatus.error("config event", it) }
+    }
 
     @Volatile
     internal var currentPackageName: String = ""
@@ -137,7 +153,7 @@ class LocationHooker : XposedModule() {
 
     // LibXposed API 101/102: 系统服务专属入口
     override fun onSystemServerStarting(param: XposedModuleInterface.SystemServerStartingParam) {
-        android.util.Log.e(
+        android.util.Log.i(
             "LocationSpoofer",
             "[SysHook] onSystemServerStarting invoked! system_server classLoader=${param.classLoader}"
         )
@@ -146,6 +162,7 @@ class LocationHooker : XposedModule() {
 
     // LibXposed API 102: 热重载请求前置确认与资源清理
     internal val vendorExtraHooks = mutableListOf<AutoCloseable>()
+    internal var deliveryHandoff: CallbackDeliveryHandoff? = null
 
     @Volatile internal var retiringGeneration = false
     private val ownedReloadTimers = java.util.Collections.synchronizedSet(mutableSetOf<java.util.Timer>())
@@ -162,6 +179,12 @@ class LocationHooker : XposedModule() {
     override fun onHotReloading(param: XposedModuleInterface.HotReloadingParam): Boolean {
         val loader = currentClassLoader ?: return false
         if (currentPackageName.isBlank()) return false
+        // Finish native one-shot cell responses before replacing their callback hooks.
+        if (hasPendingCellInfoRequests()) return false
+        val handoffCallbacks = prepareSignalReloadHandoff().toList() +
+            vendorExtraHooks.filterIsInstance<com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions.ColorOs16BleDelivery>()
+                .flatMap { it.prepareReloadHandoff().toList() } + deliveryHandoff?.remaining().orEmpty().toList() +
+            vendorExtraHooks.filterIsInstance<TelephonyCallbackDelivery>().flatMap { it.prepareReloadHandoff().toList() }
         // A new module instance receives this bootstrap-owned state. Never pass this module or
         // module-defined registration records across the classloader boundary.
         param.setSavedInstanceState(hashMapOf<String, Any>(
@@ -173,6 +196,9 @@ class LocationHooker : XposedModule() {
             ),
             "system_location" to saveSystemLocationReloadState(),
             "system_ble" to saveSystemBleReloadState(),
+            "delivery_handoff" to handoffCallbacks.toTypedArray(),
+            "query_handoff" to XposedHelpers.synchronousQueryMethods.keys.toTypedArray(),
+            "query_config" to (readConfig()?.toString() ?: "{}"),
             "sensor" to SensorStepHooker.saveReloadState()
         ))
         retiringGeneration = true
@@ -184,14 +210,18 @@ class LocationHooker : XposedModule() {
             previous
         }
         worker?.join(2_000)
-        if (worker?.isAlive == true) {
+        if (worker?.isAlive == true || !serviceDiscovery.closeIfIdle()) {
             retiringGeneration = false
             startConfigWorker()
+            serviceDiscovery.request()
             return false
         }
+        configObservers.clear()
+        HookStatus.workActive("app_motion", false)
         configReceiver?.close()
         configReceiver = null
-        lastConfig = null
+        // Retained synchronous hooks still serve callers until the next generation
+        // installs its barrier. Clearing this cache here exposes native data early.
         synchronized(ownedReloadTimers) {
             ownedReloadTimers.forEach { it.cancel() }
             ownedReloadTimers.clear()
@@ -217,12 +247,28 @@ class LocationHooker : XposedModule() {
 
     override fun onHotReloaded(param: XposedModuleInterface.HotReloadedParam) {
         val state = param.savedInstanceState as? Map<*, *>
+        var queryHandoff: SynchronousQueryHandoff? = null
         reinstallAfterHotReload(
             state = state?.get("host"),
             // First upgrade from older versions has no saved state. Recover the already-running
             // host through its Application / system service, not module-instance fields.
             resolveHost = { resolveRunningHost(param) },
-            removeOldHooks = { super.onHotReloaded(param) },
+            removeOldHooks = {
+                queryHandoff = (state?.get("query_handoff") as? Array<*>)?.filterIsInstance<java.lang.reflect.Method>()
+                    ?.takeIf { it.isNotEmpty() }?.let { methods ->
+                        SynchronousQueryHandoff(this, methods, JSONObject(state?.get("query_config") as? String ?: "{}"))
+                    }
+                try {
+                    (state?.get("delivery_handoff") as? Array<*>)?.filterNotNull()?.takeIf { it.isNotEmpty() }?.let {
+                        // Install before super removes the previous generation's retained recipient filters.
+                        deliveryHandoff = CallbackDeliveryHandoff(it.toTypedArray())
+                    }
+                } catch (error: Throwable) {
+                    queryHandoff?.close()
+                    throw error
+                }
+                super.onHotReloaded(param)
+            },
             install = { host ->
                 currentPackageName = host.packageName
                 currentClassLoader = host.classLoader
@@ -246,6 +292,9 @@ class LocationHooker : XposedModule() {
                 android.util.Log.i("LocationSpoofer", "[HotReload] Reinstalled hooks in ${param.processName}; generation=${HookStatus.generationId}")
             }
         )
+        // Keep the barrier if installation throws: a failed replacement must not
+        // silently expose native identities. Successful installs remove it here.
+        queryHandoff?.close()
     }
 
     private fun resolveRunningHost(param: XposedModuleInterface.HotReloadedParam): HotReloadHost? {
@@ -313,6 +362,7 @@ class LocationHooker : XposedModule() {
         }
 
         startConfigWorker()
+        configReceiver?.onHostEvent()
         val handledAsSystemProcess = if (BuildConfig.GLOBAL_SCHEME) {
             handleSystemProcessGlobal(pkg, processName, classLoader)
         } else {
@@ -330,7 +380,7 @@ class LocationHooker : XposedModule() {
         environmentHooksInstalled = true
 
         XposedBridge.log("[LocationSpoofer] Hooking package: $pkg")
-        android.util.Log.e(
+        android.util.Log.i(
             "LocationSpoofer",
             "[INJECTED] Hooking package: $pkg process=$processName"
         )
@@ -451,15 +501,14 @@ class LocationHooker : XposedModule() {
         val isCoreSystemProcess = isSystemServer || isPhoneProcess || isBluetoothProcess
         if (!isCoreSystemProcess) return false
 
-        android.util.Log.e(
+        android.util.Log.i(
             "LocationSpoofer",
             "[SysHook] Core system process detected: pkg=$pkg, process=$processName, myUid=${android.os.Process.myUid()}"
         )
-        if (systemHooksInstalled) {
-            readConfig()
+        if (!systemHooksInstalled.compareAndSet(false, true)) {
+            serviceDiscovery.request()
             return true
         }
-        systemHooksInstalled = true
         XposedBridge.log("[SysHook] Deploying system framework hooks in $processName...")
 
         // 厂商适配方案的手动覆盖（VendorRegistry.applyManualOverride）必须在下面任何一个
@@ -510,9 +559,11 @@ class LocationHooker : XposedModule() {
         // 各厂商在 vendor/profiles/ 下按需覆写）。基线 Hook 已在上面装完，这里是纯追加，不影响任何机型。
         VendorRegistry.logSelectionOnce()
         deploy("installExtraHooks") { VendorRegistry.installExtraHooks(this, classLoader) }
+        installServiceAvailabilityEvents(classLoader)
+        serviceDiscovery.start()
 
         val cfg = readConfig()
-        android.util.Log.e(
+        android.util.Log.i(
             "LocationSpoofer",
             "[SysHook] System framework hooks deployed in $processName. Config active=${cfg?.optBoolean("active")}, globalMode=${cfg?.optBoolean("system_hook_global_mode")}, targetPkgs=${cfg?.optJSONArray("system_hook_packages")?.length() ?: 0}"
         )
@@ -566,10 +617,6 @@ class LocationHooker : XposedModule() {
     internal var startTimestamp = System.currentTimeMillis()
 
     internal val rng = Random()
-    internal var hookDriftLat = 0.0
-    internal var hookDriftLng = 0.0
-    internal var hookAccuracyDrift = 0.0
-    internal var hookLastCallTime = 0L
 
     /** Complete normalized snapshots are swapped atomically by the framework receiver. */
     @Volatile
@@ -582,7 +629,78 @@ class LocationHooker : XposedModule() {
     private var configReceiver: FrameworkConfigReceiver? = null
     @Volatile private var configWorker: Thread? = null
     @Volatile private var isConfigWorkerStarted = false
-    private val pollingLock = Any()
+    private val pollingLock = java.lang.Object()
+
+    private val serviceDiscovery = ServiceAvailabilityDiscovery(::discoverAvailableServices)
+
+    internal fun notifyMotionDemandChanged() {
+        synchronized(pollingLock) { pollingLock.notifyAll() }
+    }
+
+    private fun hasMotionDemand(config: JSONObject?): Boolean {
+        if (retiringGeneration || config?.optBoolean("active", false) != true ||
+            currentPackageName.substringBefore(":") == "com.suseoaa.locationspoofer.fork") return false
+        return capturedLocationListeners.isNotEmpty() || capturedAMapListeners.isNotEmpty() ||
+            capturedBaiduListeners.isNotEmpty() || capturedTencentListeners.isNotEmpty() ||
+            capturedFusedLocationCallbacks.isNotEmpty() ||
+            (config.optBoolean("enable_step_simulation", true) && SensorStepHooker.capturedListeners.isNotEmpty())
+    }
+
+    /** No deadline exists while disabled or without listeners; notifications only re-evaluate demand. */
+    @Throws(InterruptedException::class)
+    private fun awaitMotionTick(worker: Thread): Boolean = synchronized(pollingLock) {
+        var dueAt = 0L
+        while (configWorker === worker && !worker.isInterrupted && !retiringGeneration) {
+            if (!hasMotionDemand(readConfig())) {
+                dueAt = 0L
+                HookStatus.workActive("app_motion", false)
+                pollingLock.wait()
+            } else {
+                HookStatus.workActive("app_motion", true)
+                val now = System.nanoTime()
+                if (dueAt == 0L) dueAt = now + 1_000_000_000L
+                val left = dueAt - now
+                if (left <= 0L) return@synchronized true
+                pollingLock.wait(left / 1_000_000L, (left % 1_000_000L).toInt())
+            }
+        }
+        HookStatus.workActive("app_motion", false)
+        false
+    }
+
+    /** Late APEX/Binder services are discovered by registration, lifecycle and config events. */
+    private fun installServiceAvailabilityEvents(classLoader: ClassLoader) {
+        if (retiringGeneration) return
+        runCatching {
+            val clazz = XposedHelpers.findClassIfExists("android.os.ServiceManager", classLoader)
+                ?: return@runCatching
+            val services = setOf("wifi", "wifiscanner", "connectivity", "location", "phone", "telephony.registry",
+                "isub", "iphonesubinfo", "bluetooth_manager", "bluetooth", "bluetooth_gatt")
+            val handles = XposedHelpers.hookAllMethods(clazz, "addService") { chain, _ ->
+                val result = chain.proceed(chain.args.toTypedArray())
+                val name = chain.args.firstOrNull() as? String
+                if (!retiringGeneration && name in services) {
+                    configReceiver?.onHostEvent()
+                    serviceDiscovery.request()
+                }
+                result
+            }
+            vendorExtraHooks += AutoCloseable { handles.forEach { runCatching { it.unhook() } } }
+        }.onFailure { HookStatus.error("service registration observer", it) }
+    }
+
+    private fun discoverAvailableServices() {
+        val loader = currentClassLoader ?: return
+        if (retiringGeneration) return
+        try {
+            if (isSystemServerProcess) {
+                tryHookPendingSystemServices(loader)
+                if (!isWifiServiceHooked) runCatching { hookSystemWifiService(loader) }
+            }
+            if (isPhoneProcessInstance && !isTelephonyServiceHooked) runCatching { hookSystemTelephonyService(loader) }
+            if (isBluetoothProcessInstance && !isBluetoothServiceHooked) runCatching { hookSystemBluetoothService(loader) }
+        } catch (error: Throwable) { HookStatus.error("service availability", error) }
+    }
 
     private fun startFrameworkConfigReceiver() {
         if (configReceiver != null) return
@@ -595,7 +713,11 @@ class LocationHooker : XposedModule() {
             onConfig = { snapshot ->
                 val config = normalizeConfig(snapshot.config)
                 lastConfig = config
-                HookStatus.configLoaded(snapshot.source, snapshot.publishedAt)
+                updateCoordinateCache(config)
+                notifyMotionDemandChanged()
+                configObservers.forEach { runConfigObserver(it) }
+                serviceDiscovery.request()
+                HookStatus.configLoaded(snapshot.source, snapshot.publishedAt, snapshot.id)
                 logOpenCellConfigLoaded(snapshot.source, config)
             },
             onError = { error ->
@@ -648,7 +770,21 @@ class LocationHooker : XposedModule() {
     /** The hook call path performs no framework calls, parsing, or file IO. */
     internal fun readConfig(): JSONObject? = lastConfig
 
-    /** Motion delivery and service discovery need a timer independently of config reception. */
+    private fun updateCoordinateCache(config: JSONObject) {
+        if (!config.optBoolean("active", false)) return
+        lastSpoofedLat = config.optDouble("lat", 0.0)
+        lastSpoofedLng = config.optDouble("lng", 0.0)
+        cachedProvince = config.optString("province", "")
+        cachedCity = config.optString("city", "")
+        cachedDistrict = config.optString("district", "")
+        cachedStreet = config.optString("street", "")
+        cachedStreetNum = config.optString("streetNum", "")
+        cachedAddress = config.optString("address", "")
+        cachedCountry = config.optString("country", "")
+        cachedPoiName = config.optString("poiName", "")
+    }
+
+    /** Motion owns a deadline only while subscribed; service discovery follows lifecycle events. */
     private fun startConfigWorker() {
         if (!isConfigWorkerStarted) {
             synchronized(pollingLock) {
@@ -660,22 +796,11 @@ class LocationHooker : XposedModule() {
                         val workerThread = Thread.currentThread()
                         while (configWorker === workerThread && !workerThread.isInterrupted) {
                             try {
-                                Thread.sleep(1_000L)
+                                if (!awaitMotionTick(workerThread)) break
                                 val newConfig = readConfig()
 
-                                // 若系统核心服务在初次加载时尚未初始化完成，在后台轮询线程中重试挂载，直至成功
-                                // isXxxProcess 标记只在全局方案的系统进程分支里被置位，非全局方案下这三个条件恒为 false
-                                if (isSystemServerProcess && !isWifiServiceHooked && currentClassLoader != null) {
-                                    try { hookSystemWifiService(currentClassLoader!!) } catch (t: Throwable) { XposedBridge.log("[SysWifi] Poller hookSystemWifiService error: $t") }
-                                }
-                                if (isPhoneProcessInstance && !isTelephonyServiceHooked && currentClassLoader != null) {
-                                    try { hookSystemTelephonyService(currentClassLoader!!) } catch (t: Throwable) { XposedBridge.log("[SysCell] Poller hookSystemTelephonyService error: $t") }
-                                }
-                                if (isBluetoothProcessInstance && !isBluetoothServiceHooked && currentClassLoader != null) {
-                                    try { hookSystemBluetoothService(currentClassLoader!!) } catch (t: Throwable) { XposedBridge.log("[SysBle] Poller hookSystemBluetoothService error: $t") }
-                                }
-
-                                if (newConfig != null && newConfig.optBoolean("active", false)) {
+                                if (newConfig != null && hasMotionDemand(newConfig)) {
+                                    HookStatus.workTick("app_motion")
                                     val currentLat = newConfig.optDouble("lat", 0.0)
                                     val currentLng = newConfig.optDouble("lng", 0.0)
                                     lastSpoofedLat = currentLat
@@ -709,15 +834,13 @@ class LocationHooker : XposedModule() {
                                     val tCount = capturedTencentListeners.size
                                     val fCount = capturedFusedLocationCallbacks.size
 
-                                    val isStationary = motion.speed <= 0.05
                                     // 标准 android.location.Location 按规范是 WGS-84，高德等 App 会自行转 GCJ-02；
                                     // 这里若直接给 GCJ-02 会被二次加密、偏移数百米（issue #62）
                                     val (targetLat, targetLng) = getAppTargetCoordinate(motion.lat, motion.lng, newConfig, "WGS-84")
-                                    val pushLat = if (isStationary) targetLat else getJitteredLocation(targetLat, targetLng).first
-                                    val pushLng = if (isStationary) targetLng else getJitteredLocation(targetLat, targetLng).second
+                                    val (pushLat, pushLng) = getJitteredLocation(targetLat, targetLng)
                                     val pushSpeed = motion.speed
                                     val pushBearing = motion.bearing
-                                    val pushAccuracy = if (isStationary) 2.5f else getJitteredAccuracy()
+                                    val pushAccuracy = getJitteredAccuracy()
                                     val pushAltitude = RouteEngine.realisticAltitude(newConfig)
 
                                     val mainHandler = try {
@@ -727,6 +850,7 @@ class LocationHooker : XposedModule() {
                                     }
 
                                     val dispatchBlock = Runnable {
+                                        if (configWorker !== workerThread || !hasMotionDemand(readConfig())) return@Runnable
                                         if (configWorker !== workerThread) return@Runnable
                                         // 1. Android Native LocationListener & Consumer
                                         if (nCount > 0 && cl != null) {
@@ -759,7 +883,7 @@ class LocationHooker : XposedModule() {
                                                             val satCount = newConfig.optInt("satellite_count", 20)
                                                             putInt("satellites", satCount)
                                                             putInt("satellites_in_view", satCount)
-                                                            putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
+                                                            putInt("satellites_used_in_fix", SatelliteProfile.usedCount(satCount))
                                                             putInt("satellites_visible", satCount)
                                                             putBoolean("mockLocation", false)
                                                         }
@@ -861,8 +985,7 @@ class LocationHooker : XposedModule() {
                                         // 2. AMapLocationListener
                                         if (aCount > 0 && cl != null) {
                                             val (aMapLat, aMapLng) = getAppTargetCoordinate(motion.lat, motion.lng, newConfig, "GCJ-02")
-                                            val aMapPushLat = if (isStationary) aMapLat else getJitteredLocation(aMapLat, aMapLng).first
-                                            val aMapPushLng = if (isStationary) aMapLng else getJitteredLocation(aMapLat, aMapLng).second
+                                            val (aMapPushLat, aMapPushLng) = getJitteredLocation(aMapLat, aMapLng)
                                             val listenersToNotify = capturedAMapListeners.toList()
                                             for (listener in listenersToNotify) {
                                                 try {
@@ -920,7 +1043,7 @@ class LocationHooker : XposedModule() {
                                                             val satCount = newConfig.optInt("satellite_count", 20)
                                                             putInt("satellites", satCount)
                                                             putInt("satellites_in_view", satCount)
-                                                            putInt("satellites_used_in_fix", satCount.coerceAtLeast(12))
+                                                            putInt("satellites_used_in_fix", SatelliteProfile.usedCount(satCount))
                                                             putInt("satellites_visible", satCount)
                                                             putBoolean("mockLocation", false)
                                                         }
@@ -955,8 +1078,7 @@ class LocationHooker : XposedModule() {
                                         // 3. BDLocationListener / BDAbstractLocationListener
                                         if (bCount > 0 && cl != null) {
                                             val (baiduLat, baiduLng) = getAppTargetCoordinate(motion.lat, motion.lng, newConfig, "BD-09")
-                                            val baiduPushLat = if (isStationary) baiduLat else getJitteredLocation(baiduLat, baiduLng).first
-                                            val baiduPushLng = if (isStationary) baiduLng else getJitteredLocation(baiduLat, baiduLng).second
+                                            val (baiduPushLat, baiduPushLng) = getJitteredLocation(baiduLat, baiduLng)
                                             val listenersToNotify = capturedBaiduListeners.toList()
                                             for (listener in listenersToNotify) {
                                                 try {
@@ -1004,8 +1126,7 @@ class LocationHooker : XposedModule() {
                                         if (tCount > 0 && cl != null) {
                                             try {
                                                 val (tencentLat, tencentLng) = getAppTargetCoordinate(motion.lat, motion.lng, newConfig, "GCJ-02")
-                                                val tencentPushLat = if (isStationary) tencentLat else getJitteredLocation(tencentLat, tencentLng).first
-                                                val tencentPushLng = if (isStationary) tencentLng else getJitteredLocation(tencentLat, tencentLng).second
+                                                val (tencentPushLat, tencentPushLng) = getJitteredLocation(tencentLat, tencentLng)
                                                 val tencentLocInterface = Class.forName(
                                                     "com.tencent.map.geolocation.TencentLocation",
                                                     false,
@@ -1060,6 +1181,7 @@ class LocationHooker : XposedModule() {
                                 XposedBridge.log("ConfigWorker error: " + t.javaClass.simpleName + ": " + t.message)
                             }
                         }
+                        HookStatus.workActive("app_motion", false)
                     }.apply {
                         isDaemon = true
                         name = "LocationSpoofer_MotionWorker"

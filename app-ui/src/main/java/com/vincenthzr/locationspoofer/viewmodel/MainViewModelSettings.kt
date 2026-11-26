@@ -101,10 +101,12 @@ internal fun MainViewModel.initialize() {
     }
 
     viewModelScope.launch {
-        XposedModuleStatus.isModuleActive.collect { active ->
+        XposedModuleStatus.connectionState.collect { connection ->
+            val active = connection == com.vincenthzr.locationspoofer.utils.ModuleConnectionState.CONNECTED
             _uiState.update {
                 it.copy(
                     isLSPosedActive = active,
+                    moduleConnectionState = connection,
                     hookedApps = if (active) lsposedManager.getHookedApps(context) else emptyList()
                 )
             }
@@ -233,7 +235,6 @@ internal fun MainViewModel.requestRestartHookedApps() {
         return
     }
     val targetPackages = mutableSetOf<String>()
-    targetPackages.addAll(lsposedManager.getHookedApps(context).map { it.packageName })
     targetPackages.addAll(settingsRepository.getSystemHookPackages())
 
     val exempt = setOf(
@@ -389,13 +390,15 @@ internal fun MainViewModel.normalizeCellArrayForStorage(cellsArray: org.json.JSO
     val formattedCells = org.json.JSONArray()
     for (i in 0 until cellsArray.length()) {
         val cell = cellsArray.optJSONObject(i) ?: continue
+        val type = normalizeCellType(cell.optString("type", cell.optString("radio", "LTE")))
         val area = cellArea(cell)
-        val identity = cellIdentity(cell)
-        if (area <= 0 || identity <= 0) {
+        val identity = if (type == "NR") sequenceOf("nci", "cellid", "cell", "ci", "cid")
+            .mapNotNull { key -> cell.opt(key)?.toString()?.toLongOrNull() }.firstOrNull { it > 0 } ?: 0L
+            else cellIdentity(cell).toLong()
+        if (area < 0 || identity <= 0) {
             continue
         }
 
-        val type = normalizeCellType(cell.optString("type", cell.optString("radio", "LTE")))
         val cellObj = org.json.JSONObject().apply {
             put("type", type)
             put("radio", cell.optString("radio", type))
@@ -403,12 +406,13 @@ internal fun MainViewModel.normalizeCellArrayForStorage(cellsArray: org.json.JSO
             put("mnc", positiveCellInt(cell, "mnc", "net", default = 0))
             put("tac", area)
             put("lac", area)
-            put("ci", identity)
-            put("cid", identity)
+            put("ci", if (type == "NR") 0 else identity)
+            put("cid", if (type == "NR") 0 else identity)
             put("cellid", identity)
+            if (type == "NR") put("nci", identity)
             put(
                 "pci",
-                positiveCellInt(cell, "pci", default = (identity % 504).coerceIn(0, 503))
+                cell.optInt("pci", Int.MAX_VALUE).takeIf { it in 0..if (type == "NR") 1007 else 503 } ?: Int.MAX_VALUE
             )
             put("dbm", cellSignalDbm(cell, i))
             put("isRegistered", cell.optBoolean("isRegistered", i == 0))
@@ -423,6 +427,7 @@ internal fun MainViewModel.normalizeCellType(rawType: String): String {
         "GSM" -> "GSM"
         "UMTS", "WCDMA" -> "WCDMA"
         "NR", "NR5G", "5G" -> "NR"
+        "CDMA" -> "CDMA"
         else -> "LTE"
     }
 }
@@ -535,8 +540,9 @@ internal fun MainViewModel.loadInstalledAppsForSystemHook() {
 }
 
 internal fun MainViewModel.setSystemHookGlobalMode(enabled: Boolean) {
-    settingsRepository.isSystemHookGlobalMode = enabled
-    _uiState.update { it.copy(isSystemHookGlobalMode = enabled) }
+    val effective = enabled || BuildConfig.GLOBAL_SCHEME
+    settingsRepository.isSystemHookGlobalMode = effective
+    _uiState.update { it.copy(isSystemHookGlobalMode = effective) }
 
     refreshSystemHookConfig()
 }

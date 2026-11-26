@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.data.model.HookStatusReport
+import com.vincenthzr.locationspoofer.data.model.HookConfigCheck
 import com.vincenthzr.locationspoofer.data.model.HookStatusReport.State
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
@@ -51,6 +52,7 @@ internal fun hookStatusSummary(reports: Map<String, HookStatusReport?>): Pair<In
 @Composable
 fun HookStatusScreen(
     reports: Map<String, HookStatusReport?>,
+    configCheck: HookConfigCheck,
     loading: Boolean,
     onRefresh: () -> Unit,
     debugDump: Boolean,
@@ -104,7 +106,17 @@ fun HookStatusScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                reports.forEach { (process, report) -> ProcessCard(process, report, boot) }
+                if (!loading) {
+                    val matched = configCheck.hosts.values.count { it == HookConfigCheck.HostState.MATCHED }
+                    Hint(when (configCheck.state) {
+                        HookConfigCheck.State.UNAVAILABLE -> stringResource(R.string.hook_config_check_unavailable)
+                        HookConfigCheck.State.CHANGING -> stringResource(R.string.hook_config_check_changing)
+                        HookConfigCheck.State.COMPARED -> stringResource(R.string.hook_config_check_count, matched, configCheck.hosts.size)
+                    })
+                }
+                reports.forEach { (process, report) ->
+                    ProcessCard(process, report, boot, configCheck.hosts[process].takeUnless { loading })
+                }
 
                 MiuixCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -141,7 +153,7 @@ fun HookStatusScreen(
 }
 
 @Composable
-private fun ProcessCard(process: String, report: HookStatusReport?, bootTime: Long) {
+private fun ProcessCard(process: String, report: HookStatusReport?, bootTime: Long, configState: HookConfigCheck.HostState?) {
     MiuixCard(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 18.dp,
@@ -154,9 +166,21 @@ private fun ProcessCard(process: String, report: HookStatusReport?, bootTime: Lo
             color = MaterialTheme.colorScheme.onSurface
         )
         Spacer(Modifier.height(4.dp))
+        configState?.takeUnless { it == HookConfigCheck.HostState.NO_REPORT || it == HookConfigCheck.HostState.OLD_PROCESS }?.let {
+            Hint(stringResource(when (it) {
+                HookConfigCheck.HostState.MATCHED -> R.string.hook_config_host_matched
+                HookConfigCheck.HostState.NO_RUNNING_TARGET -> R.string.hook_config_host_not_running
+                HookConfigCheck.HostState.NO_REPORT -> R.string.hook_config_host_no_report
+                HookConfigCheck.HostState.OLD_PROCESS -> R.string.hook_config_host_old_process
+                HookConfigCheck.HostState.NO_SNAPSHOT_ID -> R.string.hook_config_host_unconfirmed
+                HookConfigCheck.HostState.DIFFERENT_SNAPSHOT -> R.string.hook_config_host_different
+            }))
+        }
         when {
+            configState == HookConfigCheck.HostState.OLD_PROCESS -> Hint(stringResource(R.string.hook_config_host_old_process))
+            configState == HookConfigCheck.HostState.NO_REPORT -> Hint(stringResource(R.string.hook_config_host_no_report))
             report == null -> Hint(stringResource(R.string.hook_status_no_report))
-            report.isStale(bootTime) -> Hint(stringResource(R.string.hook_status_stale))
+            configState == null && report.isStale(bootTime) -> Hint(stringResource(R.string.hook_status_stale))
             else -> {
                 Hint(
                     stringResource(
@@ -281,6 +305,7 @@ private fun componentName(name: String): Int? = when (name) {
     "CONNECTIVITY_SERVICE" -> R.string.hook_component_connectivity_service
     "TELEPHONY_REGISTRY" -> R.string.hook_component_telephony_registry
     "APPOPS_SERVICE" -> R.string.hook_component_appops_service
+    "SETTINGS_PROVIDER" -> R.string.hook_component_settings_provider
     "TELEPHONY_PHONE_MANAGER" -> R.string.hook_component_telephony_phone_manager
     "BLUETOOTH_SCAN_SERVICE" -> R.string.hook_component_bluetooth_scan_service
     else -> null

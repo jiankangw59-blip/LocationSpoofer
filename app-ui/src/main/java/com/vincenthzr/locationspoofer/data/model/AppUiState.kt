@@ -85,6 +85,8 @@ data class AppState(
     /** 非空即触发"确认重启应用"弹窗；内容来自 lsposedManager.getHookedApps() */
     val hookedAppsToRestart: List<AppInfoItem>? = null,
     val isLSPosedActive: Boolean = false,
+    val moduleConnectionState: com.vincenthzr.locationspoofer.utils.ModuleConnectionState =
+        com.vincenthzr.locationspoofer.utils.ModuleConnectionState.CONNECTING,
     val longitudeInput: String = "",
     val latitudeInput: String = "",
     val showCoordinateError: Boolean = false,

@@ -247,7 +247,7 @@ internal fun LocationHooker.hookBaiduSDK(classLoader: ClassLoader) {
                 var result = chain.proceed(chain.args.toTypedArray())
                 val config = readConfig()
                 if (config != null && config.optBoolean("active", false)) {
-                    result = config.optInt("satellite_count", 20)
+                    result = SatelliteProfile.count(config)
                 }
                 return@hookAllMethods result
             }

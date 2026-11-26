@@ -21,57 +21,13 @@ object GnssFastMockEngine {
     private const val MAX_SATELLITES = 32
 
     // 预置可信多星座模板 (GPS=1, GLONASS=3, BDS=5, GALILEO=6)
-    private val CONSTELLATION_TYPES = intArrayOf(
-        // BDS (北斗) - 亚太区域主力
-        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-        // GPS
-        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        // GLONASS
-        3, 3, 3, 3,
-        // Galileo
-        6, 6, 6, 6
-    )
-
-    private val SVID_LIST = intArrayOf(
-        // BDS SVIDs (1-35)
-        1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14,
-        // GPS SVIDs (1-32)
-        1, 3, 6, 7, 8, 9, 11, 14, 17, 19, 21, 22,
-        // GLONASS SVIDs (1-24)
-        1, 2, 3, 4,
-        // Galileo SVIDs (1-36)
-        1, 2, 3, 5
-    )
-
-    // 预置基准仰角 (度)
-    private val BASE_ELEVATIONS = floatArrayOf(
-        78f, 65f, 54f, 42f, 38f, 72f, 58f, 49f, 33f, 61f, 45f, 29f,
-        82f, 69f, 51f, 44f, 36f, 75f, 63f, 47f, 31f, 59f, 41f, 25f,
-        55f, 43f, 35f, 28f,
-        60f, 48f, 39f, 22f
-    )
-
-    // 预置基准方位角 (度)
-    private val BASE_AZIMUTHS = floatArrayOf(
-        12f, 45f, 78f, 112f, 145f, 178f, 212f, 245f, 278f, 312f, 335f, 25f,
-        35f, 68f, 95f, 132f, 165f, 198f, 232f, 265f, 298f, 325f, 15f, 52f,
-        85f, 175f, 265f, 345f,
-        45f, 135f, 225f, 315f
-    )
-
-    // 预置平滑微扰动表 (循环索引，避免 Math.random() 开销)
-    private val JITTER_TABLE = floatArrayOf(
-        -0.8f, 0.5f, 1.2f, -0.3f, 0.9f, -1.1f, 0.4f, -0.6f,
-        1.1f, -0.9f, 0.7f, -0.4f, 1.3f, -1.2f, 0.3f, -0.2f
-    )
-
-    // 缓存区 (零 GC 复用)
     @Volatile
     private var cachedGnssStatusObj: Any? = null
     @Volatile
     private var lastGnssStatusTimeMs: Long = 0L
     @Volatile
     private var cachedGnssCount: Int = 0
+    @Volatile private var cachedJitter: Boolean = false
 
     @Volatile
     private var cachedGpsSatelliteList: List<Any>? = null
@@ -79,6 +35,7 @@ object GnssFastMockEngine {
     private var lastGpsSatellitesTimeMs: Long = 0L
     @Volatile
     private var cachedGpsSatCount: Int = 0
+    @Volatile private var cachedGpsJitter: Boolean = false
 
     // 反射句柄缓存
     private class ClassReflectionHolder(val classLoader: ClassLoader) {
@@ -99,6 +56,8 @@ object GnssFastMockEngine {
         var azimuthsField: Field? = null
         var carrierFrequenciesField: Field? = null
         var basebandCn0DbHzsField: Field? = null
+        var svidShift = if (android.os.Build.VERSION.SDK_INT >= 30) 12 else 8
+        var constellationShift = if (android.os.Build.VERSION.SDK_INT >= 30) 8 else 4
 
         // GpsSatellite
         var gpsSatelliteClass: Class<*>? = null
@@ -149,13 +108,18 @@ object GnssFastMockEngine {
                 try {
                     gnssStatusClass = XposedHelpers.findClassIfExists("android.location.GnssStatus", classLoader)
                     if (gnssStatusClass != null) {
-                        countField = gnssStatusClass!!.getDeclaredField("mSvCount").apply { isAccessible = true }
-                        svidWithFlagsField = gnssStatusClass!!.getDeclaredField("mSvidWithFlags").apply { isAccessible = true }
-                        cn0DbHzField = gnssStatusClass!!.getDeclaredField("mCn0DbHz").apply { isAccessible = true }
-                        elevationsField = gnssStatusClass!!.getDeclaredField("mElevations").apply { isAccessible = true }
-                        azimuthsField = gnssStatusClass!!.getDeclaredField("mAzimuths").apply { isAccessible = true }
-                        try { carrierFrequenciesField = gnssStatusClass!!.getDeclaredField("mCarrierFrequencies").apply { isAccessible = true } } catch (_: Throwable) {}
-                        try { basebandCn0DbHzsField = gnssStatusClass!!.getDeclaredField("mBasebandCn0DbHzs").apply { isAccessible = true } } catch (_: Throwable) {}
+                        fun field(vararg names: String): Field? = names.firstNotNullOfOrNull { name ->
+                            runCatching { gnssStatusClass!!.getDeclaredField(name).apply { isAccessible = true } }.getOrNull()
+                        }
+                        countField = field("mSvCount")
+                        svidWithFlagsField = field("mSvidWithFlags")
+                        cn0DbHzField = field("mCn0DbHzs", "mCn0DbHz")
+                        elevationsField = field("mElevations")
+                        azimuthsField = field("mAzimuths")
+                        carrierFrequenciesField = field("mCarrierFrequencies")
+                        basebandCn0DbHzsField = field("mBasebandCn0DbHzs")
+                        field("SVID_SHIFT_WIDTH")?.let { svidShift = it.getInt(null) }
+                        field("CONSTELLATION_TYPE_SHIFT_WIDTH")?.let { constellationShift = it.getInt(null) }
                     }
                 } catch (e: Throwable) {
                 }
@@ -206,18 +170,18 @@ object GnssFastMockEngine {
 
         // 1 秒内命中快照直接返回
         val cached = cachedGnssStatusObj
-        if (cached != null && cachedGnssCount == count && now - lastGnssStatusTimeMs < 1000L) {
+        if (cached != null && cachedGnssCount == count && now / 1000L == lastGnssStatusTimeMs / 1000L && cachedJitter == enableJitter) {
             return cached
         }
 
         synchronized(this) {
             // Double check
-            if (cachedGnssStatusObj != null && cachedGnssCount == count && now - lastGnssStatusTimeMs < 1000L) {
+            if (cachedGnssStatusObj != null && cachedGnssCount == count && now / 1000L == lastGnssStatusTimeMs / 1000L && cachedJitter == enableJitter) {
                 return cachedGnssStatusObj
             }
 
             val holder = getReflectionHolder(classLoader)
-            val timeStep = (now / 1000L)
+            val sky = SatelliteSky.snapshot(count, now, enableJitter)
 
             // 方案 A: Android 11+ Builder 极速构建 (全反射句柄已缓存)
             if (holder.builderConstructor != null && holder.addSatelliteMethod != null && holder.buildMethod != null) {
@@ -226,28 +190,14 @@ object GnssFastMockEngine {
                     val addMethod = holder.addSatelliteMethod!!
 
                     for (i in 0 until count) {
-                        val type = CONSTELLATION_TYPES[i]
-                        val svid = SVID_LIST[i]
-                        val baseElev = BASE_ELEVATIONS[i]
-                        val baseAz = BASE_AZIMUTHS[i]
-
-                        // 平滑仰角与方位角慢速轨道运行
-                        val driftStep = ((timeStep + i * 3) % 360).toFloat()
-                        val elevation = (baseElev + (driftStep % 10 - 5)).coerceIn(16f, 88f)
-                        val azimuth = (baseAz + driftStep * 0.1f) % 360f
-
-                        val jitter = if (enableJitter) JITTER_TABLE[(timeStep.toInt() + i) and 15] else 0f
-                        // 真实满格强信号典型值: 34~43 dB-Hz
-                        val cn0 = (34f + (elevation / 90f) * 8f + jitter).coerceIn(30f, 43.5f)
-                        val usedInFix = elevation > 18f
-
-                        // 真实载波频率: GPS L1 (1575.42 MHz), BDS B1I (1561.098 MHz), GLONASS (1602.0 MHz)
-                        val carrierFreq = when (type) {
-                            5 -> 1561098000f
-                            3 -> 1602000000f
-                            6 -> 1575420000f
-                            else -> 1575420000f
-                        }
+                        val satellite = sky[i]
+                        val type = satellite.constellation
+                        val svid = satellite.svid
+                        val cn0 = satellite.cn0
+                        val elevation = satellite.elevation
+                        val azimuth = satellite.azimuth
+                        val usedInFix = satellite.used
+                        val carrierFreq = satellite.carrierHz ?: 0f
                         val basebandCn0 = (cn0 - 2.5f).coerceAtLeast(26f)
 
                         addMethod.invoke(
@@ -260,7 +210,7 @@ object GnssFastMockEngine {
                             true,             // hasEphemeris
                             true,             // hasAlmanac
                             usedInFix,        // usedInFix
-                            true,             // hasCarrierFrequency
+                            satellite.carrierHz != null, // hasCarrierFrequency
                             carrierFreq,      // carrierFrequencyHz
                             true,             // hasBasebandCn0
                             basebandCn0       // basebandCn0DbHz
@@ -271,6 +221,7 @@ object GnssFastMockEngine {
                     cachedGnssStatusObj = newStatus
                     lastGnssStatusTimeMs = now
                     cachedGnssCount = count
+                    cachedJitter = enableJitter
                     return newStatus
                 } catch (e: Throwable) {
                     XposedBridge.log("[GnssFastMockEngine] Builder build failed: $e")
@@ -290,24 +241,14 @@ object GnssFastMockEngine {
                     val basebandCn0s = FloatArray(count)
 
                     for (i in 0 until count) {
-                        val type = CONSTELLATION_TYPES[i]
-                        val svid = SVID_LIST[i]
-                        val baseElev = BASE_ELEVATIONS[i]
-                        val baseAz = BASE_AZIMUTHS[i]
-
-                        val driftStep = ((timeStep + i * 3) % 360).toFloat()
-                        val elevation = (baseElev + (driftStep % 10 - 5)).coerceIn(16f, 88f)
-                        val azimuth = (baseAz + driftStep * 0.1f) % 360f
-                        val jitter = if (enableJitter) JITTER_TABLE[(timeStep.toInt() + i) and 15] else 0f
-                        val cn0 = (34f + (elevation / 90f) * 8f + jitter).coerceIn(30f, 43.5f)
-                        val usedInFix = elevation > 18f
-
-                        val carrierFreq = when (type) {
-                            5 -> 1561098000f
-                            3 -> 1602000000f
-                            6 -> 1575420000f
-                            else -> 1575420000f
-                        }
+                        val satellite = sky[i]
+                        val type = satellite.constellation
+                        val svid = satellite.svid
+                        val cn0 = satellite.cn0
+                        val elevation = satellite.elevation
+                        val azimuth = satellite.azimuth
+                        val usedInFix = satellite.used
+                        val carrierFreq = satellite.carrierHz ?: 0f
 
                         cn0DbHzs[i] = cn0
                         elevations[i] = elevation
@@ -315,9 +256,8 @@ object GnssFastMockEngine {
                         carrierFreqs[i] = carrierFreq
                         basebandCn0s[i] = cn0 - 2.5f
 
-                        var flags = 1 or 2 // hasEphemeris | hasAlmanac
-                        if (usedInFix) flags = flags or 4
-                        svidWithFlags[i] = (svid shl 8) or (type and 0xF) or (flags shl 4)
+                        svidWithFlags[i] = SatelliteSky.packed(satellite, holder.svidShift,
+                            holder.constellationShift, holder.basebandCn0DbHzsField != null)
                     }
 
                     holder.svidWithFlagsField!!.set(fallbackOriginalObj, svidWithFlags)
@@ -330,6 +270,7 @@ object GnssFastMockEngine {
                     cachedGnssStatusObj = fallbackOriginalObj
                     lastGnssStatusTimeMs = now
                     cachedGnssCount = count
+                    cachedJitter = enableJitter
                     return fallbackOriginalObj
                 } catch (e: Throwable) {
                     XposedBridge.log("[GnssFastMockEngine] Fallback field injection failed: $e")
@@ -340,20 +281,26 @@ object GnssFastMockEngine {
         return fallbackOriginalObj
     }
 
+    internal fun packedSatellite(value: SatelliteSky.Satellite, loader: ClassLoader): Int {
+        val holder = getReflectionHolder(loader)
+        return SatelliteSky.packed(value, holder.svidShift, holder.constellationShift,
+            holder.basebandCn0DbHzsField != null)
+    }
+
     /**
      * 极速获取或创建 GpsSatellite 列表 (适配旧版 GpsStatus.getSatellites() / DevCheck)
      */
-    fun getOrCreateSpoofedGpsSatellites(classLoader: ClassLoader, targetCount: Int): Iterable<Any> {
+    fun getOrCreateSpoofedGpsSatellites(classLoader: ClassLoader, targetCount: Int, enableJitter: Boolean = true): Iterable<Any> {
         val now = System.currentTimeMillis()
         val count = targetCount.coerceIn(4, MAX_SATELLITES)
 
         val cached = cachedGpsSatelliteList
-        if (cached != null && cachedGpsSatCount == count && now - lastGpsSatellitesTimeMs < 1000L) {
+        if (cached != null && cachedGpsSatCount == count && now / 1000L == lastGpsSatellitesTimeMs / 1000L && cachedGpsJitter == enableJitter) {
             return cached
         }
 
         synchronized(this) {
-            if (cachedGpsSatelliteList != null && cachedGpsSatCount == count && now - lastGpsSatellitesTimeMs < 1000L) {
+            if (cachedGpsSatelliteList != null && cachedGpsSatCount == count && now / 1000L == lastGpsSatellitesTimeMs / 1000L && cachedGpsJitter == enableJitter) {
                 return cachedGpsSatelliteList!!
             }
 
@@ -362,24 +309,18 @@ object GnssFastMockEngine {
                 return emptyList()
             }
 
-            val timeStep = (now / 1000L)
+            val sky = SatelliteSky.snapshot(count, now, enableJitter)
             val list = ArrayList<Any>(count)
 
             try {
                 for (i in 0 until count) {
-                    val type = CONSTELLATION_TYPES[i]
-                    val rawSvid = SVID_LIST[i]
-                    val prn = if (type == 3) rawSvid + 64 else rawSvid
-
+                    val value = sky[i]
+                    val prn = value.svid + when (value.constellation) { 3 -> 64; 5 -> 200; 6 -> 300; else -> 0 }
                     val sat = holder.gpsSatelliteConstructor!!.newInstance(prn)
-                    val baseElev = BASE_ELEVATIONS[i]
-                    val baseAz = BASE_AZIMUTHS[i]
-                    val driftStep = ((timeStep + i * 3) % 360).toFloat()
-                    val elevation = (baseElev + (driftStep % 10 - 5)).coerceIn(16f, 88f)
-                    val azimuth = (baseAz + driftStep * 0.1f) % 360f
-                    val jitter = JITTER_TABLE[(timeStep.toInt() + i) and 15]
-                    val snr = (34f + (elevation / 90f) * 8f + jitter).coerceIn(30f, 43.5f)
-                    val usedInFix = elevation > 18f
+                    val usedInFix = value.used
+                    val snr = value.cn0
+                    val elevation = value.elevation
+                    val azimuth = value.azimuth
 
                     holder.satValidField?.setBoolean(sat, true)
                     holder.satHasEphemerisField?.setBoolean(sat, true)
@@ -395,6 +336,7 @@ object GnssFastMockEngine {
                 cachedGpsSatelliteList = list
                 lastGpsSatellitesTimeMs = now
                 cachedGpsSatCount = count
+                cachedGpsJitter = enableJitter
                 return list
             } catch (e: Throwable) {
                 XposedBridge.log("[GnssFastMockEngine] createSpoofedGpsSatellites failed: $e")

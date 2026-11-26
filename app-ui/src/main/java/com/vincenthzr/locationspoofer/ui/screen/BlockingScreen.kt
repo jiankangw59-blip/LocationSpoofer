@@ -21,7 +21,7 @@ import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AppColors
 
 @Composable
-fun InitializingScreen(isDark: Boolean) {
+fun InitializingScreen(isDark: Boolean, message: String? = null) {
     val textSecondary = AppColors.textSecondary(isDark)
 
     Box(
@@ -60,7 +60,7 @@ fun InitializingScreen(isDark: Boolean) {
                 strokeWidth = 2.dp,
                 modifier = Modifier.size(28.dp)
             )
-            Text(stringResource(R.string.initializing_env), color = textSecondary, fontSize = 13.sp)
+            Text(message ?: stringResource(R.string.initializing_env), color = textSecondary, fontSize = 13.sp)
         }
     }
 }

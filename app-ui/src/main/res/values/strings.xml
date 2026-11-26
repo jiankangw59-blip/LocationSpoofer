@@ -1,5 +1,6 @@
 <?xml version="1.0" ?>
 <resources>
+    <string name="hook_component_settings_provider">Settings provider</string>
     <string name="app_name">LocationSpoofer</string>
     <string name="map_type_label">Map Type</string>
     <string name="map_type_standard">Standard</string>
@@ -116,6 +117,15 @@
     <string name="hook_status_updated_at">Updated at %1$s</string>
     <string name="hook_status_config">Config in use: %1$s (updated %2$s)</string>
     <string name="hook_status_config_none">No config file could be read</string>
+    <string name="hook_config_check_count">%1$d/%2$d hosts confirmed the current configuration</string>
+    <string name="hook_config_check_unavailable">Framework configuration and host reports could not be compared.</string>
+    <string name="hook_config_check_changing">Configuration changed while reading. Refresh to check again.</string>
+    <string name="hook_config_host_matched">The running process reported this configuration.</string>
+    <string name="hook_config_host_not_running">LSPosed did not report a unique running target for this host.</string>
+    <string name="hook_config_host_no_report">No process report is available for verification.</string>
+    <string name="hook_config_host_old_process">Report belongs to an older process. Waiting for a fresh report.</string>
+    <string name="hook_config_host_unconfirmed">Report is missing its process or configuration identity.</string>
+    <string name="hook_config_host_different">The reported configuration differs from the current framework configuration.</string>
     <string name="hook_status_source">Found via: %1$s</string>
     <string name="hook_status_errors">Deployment errors</string>
     <string name="hook_status_debug_dump">Dump system services on boot</string>
@@ -566,7 +576,7 @@ Error details: %s</string>
     <string name="bt_address_hint">e.g. AA:BB:CC:11:22:33</string>
     <string name="bt_rssi_label">Signal RSSI (%1$d dBm)</string>
     <string name="bt_scan_record_label">Scan Record Hex (Optional)</string>
-    <string name="bt_scan_record_hint">e.g. 02010403033CFE... (Paste 31-byte raw broadcast data)</string>
+    <string name="bt_scan_record_hint">e.g. 02010403033CFE... (Full AD payload; blank adds no beacon)</string>
     <string name="designated_bt_badge">Simulated Preferred</string>
     <string name="no_designated_bt">Auto Default (Follow Scan)</string>
     <string name="no_bt_data_in_record">No Bluetooth data in this record. Tap \"+ Add Bluetooth\" above to create.</string>

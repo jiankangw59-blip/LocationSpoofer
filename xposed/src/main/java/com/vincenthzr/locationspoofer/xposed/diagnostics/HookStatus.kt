@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -43,6 +44,35 @@ object HookStatus {
     private val missing = ConcurrentHashMap.newKeySet<SystemComponent>()
     private val methods = ConcurrentHashMap<String, ConcurrentHashMap<String, Int>>()
     private val errors = java.util.Collections.synchronizedList(ArrayList<String>())
+    private class Work {
+        val active = AtomicBoolean(false)
+        val starts = AtomicLong()
+        val stops = AtomicLong()
+        val ticks = AtomicLong()
+    }
+    private val work = ConcurrentHashMap<String, Work>()
+
+    /** Counters are memory-only on ticks; only actual start/stop/config events schedule IO. */
+    fun workActive(name: String, active: Boolean) {
+        val entry = work.getOrPut(name) { Work() }
+        if (entry.active.getAndSet(active) != active) {
+            if (active) entry.starts.incrementAndGet() else entry.stops.incrementAndGet()
+            scheduleWrite()
+        }
+    }
+
+    fun workTick(name: String) { work.getOrPut(name) { Work() }.ticks.incrementAndGet() }
+
+    /** Keep event diagnostics in memory; config/demand changes publish their snapshot. */
+    fun workEvent(name: String) {
+        workTick(name)
+    }
+
+    /** Count an event and request a coalesced diagnostic snapshot. */
+    internal fun workEventAndRequestSnapshot(name: String) {
+        workEvent(name)
+        scheduleWrite()
+    }
 
     // 普通 App 进程里 hookAllMethods 也会调到这里，写线程只在真正需要落盘的系统进程里创建
     private val writerDelegate = lazy {
@@ -77,14 +107,14 @@ object HookStatus {
         if (process != null) scheduleWrite()
     }
 
-    @Volatile private var configPath: String? = null
-    @Volatile private var configModified = 0L
+    private data class ConfigStatus(val path: String, val modified: Long, val snapshotId: String)
+    @Volatile private var configStatus: ConfigStatus? = null
 
-    /** 当前配置来源与发布时刻，用于确认各系统进程是否收到了框架更新。 */
-    fun configLoaded(path: String, modified: Long) {
-        if (path == configPath && modified == configModified) return
-        configPath = path
-        configModified = modified
+    /** Report one coherent set of metadata from the applied framework snapshot. */
+    fun configLoaded(path: String, modified: Long, snapshotId: String) {
+        val status = ConfigStatus(path, modified, snapshotId)
+        if (status == configStatus) return
+        configStatus = status
         scheduleWrite()
     }
 
@@ -154,11 +184,21 @@ object HookStatus {
                 put("family", active.family.name)
                 put("manual", VendorRegistry.isManualOverride)
             })
-            configPath?.let { put("config", JSONObject().put("path", it).put("modified", configModified)) }
+            configStatus?.let {
+                put("config", JSONObject().put("path", it.path).put("modified", it.modified).put("snapshot_id", it.snapshotId))
+            }
             put("system", profile.systemLabel)
             put("model", profile.model)
             put("components", components)
             put("errors", JSONArray(synchronized(errors) { errors.toList() }))
+            put("work", JSONObject().apply {
+                work.toSortedMap().forEach { (name, state) -> put(name, JSONObject().apply {
+                    put("active", state.active.get())
+                    put("starts", state.starts.get())
+                    put("stops", state.stops.get())
+                    put("ticks", state.ticks.get())
+                }) }
+            })
         }
     }
 }

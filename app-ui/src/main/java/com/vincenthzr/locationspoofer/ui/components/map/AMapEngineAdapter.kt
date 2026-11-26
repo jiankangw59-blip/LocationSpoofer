@@ -178,43 +178,12 @@ class AMapControllerImpl(
 
     override fun setMapType(type: AppMapType) {
         currentMapType = type
-        when (type) {
-            AppMapType.NORMAL -> {
-                map.mapType = if (isDarkMode) AMap.MAP_TYPE_NIGHT else AMap.MAP_TYPE_NORMAL
-                val cameraPosition = map.cameraPosition ?: return
-                val newCam = CameraPosition(
-                    cameraPosition.target,
-                    cameraPosition.zoom,
-                    0f,
-                    cameraPosition.bearing
-                )
-                map.moveCamera(CameraUpdateFactory.newCameraPosition(newCam))
-            }
-
-            AppMapType.SATELLITE -> {
-                map.mapType = AMap.MAP_TYPE_SATELLITE
-                val cameraPosition = map.cameraPosition ?: return
-                val newCam = CameraPosition(
-                    cameraPosition.target,
-                    cameraPosition.zoom,
-                    0f,
-                    cameraPosition.bearing
-                )
-                map.moveCamera(CameraUpdateFactory.newCameraPosition(newCam))
-            }
-
-            AppMapType.MAP_3D -> {
-                map.mapType = if (isDarkMode) AMap.MAP_TYPE_NIGHT else AMap.MAP_TYPE_NORMAL
-                val cameraPosition = map.cameraPosition ?: return
-                val newCam = CameraPosition(
-                    cameraPosition.target,
-                    cameraPosition.zoom,
-                    45f,
-                    cameraPosition.bearing
-                )
-                map.moveCamera(CameraUpdateFactory.newCameraPosition(newCam))
-            }
-        }
+        map.mapType = if (type == AppMapType.SATELLITE) AMap.MAP_TYPE_SATELLITE
+            else if (isDarkMode) AMap.MAP_TYPE_NIGHT else AMap.MAP_TYPE_NORMAL
+        // moveCamera is asynchronous. A whole CameraPosition read here can still contain
+        // the SDK's Beijing default and overwrite a queued restoration of the saved point.
+        // A relative tilt update preserves the target, zoom and bearing in that queue.
+        map.moveCamera(CameraUpdateFactory.changeTilt(if (type == AppMapType.MAP_3D) 45f else 0f))
     }
 }
 

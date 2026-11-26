@@ -55,6 +55,9 @@ enum class SystemComponent(val process: SystemProcess) {
     /** AppOpsService（OP_MOCK_LOCATION 反检测） */
     APPOPS_SERVICE(SystemProcess.SYSTEM_SERVER),
 
+    /** Legacy mock setting reads; discovered from the local provider instance. */
+    SETTINGS_PROVIDER(SystemProcess.SYSTEM_SERVER),
+
     /** PhoneInterfaceManager（基站信息查询） */
     TELEPHONY_PHONE_MANAGER(SystemProcess.PHONE),
 

@@ -117,27 +117,35 @@ internal fun MainViewModel.joystickMaxSpeedMs(): Float =
 /** 首页地图确认选点 */
 
 internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging: Boolean = false) {
+    val samePoint = configurationTargetMatches(lat, lng)
+    if (!samePoint) {
+        pointConfigurationJob?.cancel()
+        pointConfigurationJob = null
+    }
     _uiState.update {
         it.copy(
             latitudeInput = String.format("%.6f", lat),
             longitudeInput = String.format("%.6f", lng),
             mapConfirmedPoint = Pair(lat, lng),
-            showCoordinateError = false
+            showCoordinateError = false,
+            isSavingConfig = if (samePoint) it.isSavingConfig else false
         )
     }
     evaluateMockCapabilities()
     val state = _uiState.value
+    if (samePoint && pointConfigurationJob?.isActive == true) return
     if (state.isSpoofingActive) {
         settingsRepository.lastSpoofedLat = lat.toString()
         settingsRepository.lastSpoofedLng = lng.toString()
-        viewModelScope.launch {
+        pointConfigurationJob = viewModelScope.launch {
             if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng) && !isDragging) {
-                fetchWifiFromWigleSync(lat, lng)
+                fetchRemoteWifiSync(lat, lng)
             }
             if (state.mockCell && !hasLocalCellsWithin50m(lat, lng) && !isDragging) {
-                fetchCellFromOpenCellIdSync(lat, lng)
+                fetchRemoteCellsSync(lat, lng)
             }
             evaluateMockCapabilitiesSuspend(lat, lng)
+            if (!settingsRepository.isSpoofingActive || !configurationTargetMatches(lat, lng)) return@launch
             val updatedState = _uiState.value
             locationRepository.updateConfig(
                 lat = lat,

@@ -55,8 +55,8 @@ private fun logLoc(msg: String) {
 }
 
 // 存储被标记为目标应用的 ILocationListener / ILocationCallback 实例
-private val spoofedListenerInstances: MutableSet<Any> =
-    Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+private val spoofedListenerInstances =
+    Collections.synchronizedMap(WeakHashMap<Any, NativeRegistration<Unit>>())
 
 // 存储当前处于活跃状态的目标应用 ILocationListener 代理对象及其 Binder 映射（强引用避免 GC 导致失联）
 private data class ListenerRegistrationInfo(
@@ -66,23 +66,160 @@ private data class ListenerRegistrationInfo(
     val registeredTime: Long = System.currentTimeMillis()
 )
 
-private val activeListenerBinders = ConcurrentHashMap<IBinder, ListenerRegistrationInfo>()
+private var locationDemandChanged: (() -> Unit)? = null
+private var locationDemandTimer: DemandTimer? = null
+private var nativeSignalGate: NativeSignalGate? = null
+private var rawGnssDelivery: RawGnssDelivery? = null
+
+private val nativeLocationRegistrationLock = Any()
+private val activeListenerBinders =
+    BinderRegistrationMap<NativeRegistration<ListenerRegistrationInfo>> { locationDemandChanged?.invoke() }
+private fun NativeRegistrationAttempt.trackLocationInstance(listener: Any) {
+    track(Unit, { spoofedListenerInstances.put(listener, it) }) { rejected, previous ->
+        if (previous == null) spoofedListenerInstances.remove(listener, rejected)
+        else spoofedListenerInstances.replace(listener, rejected, previous)
+    }
+}
+
+private fun NativeRegistrationAttempt.trackListener(binder: IBinder?, info: ListenerRegistrationInfo) {
+    if (binder != null) {
+        track(info, { activeListenerBinders.put(binder, it) }) { rejected, previous ->
+            activeListenerBinders.rollback(binder, rejected, previous)
+        }
+    }
+    trackLocationInstance(info.listener)
+}
 
 // 存储当前活跃的目标应用 IGnssStatusListener 映射
 private data class GnssStatusRegistrationInfo(
     val listener: Any,
     val packageName: String,
-    val registeredTime: Long = System.currentTimeMillis()
+    val registeredTime: Long = System.currentTimeMillis(),
+    @Volatile var started: Boolean = false,
+    @Volatile var accepted: Boolean = true
 )
-private val activeGnssStatusBinders = ConcurrentHashMap<IBinder, GnssStatusRegistrationInfo>()
+private val activeGnssStatusBinders = BinderRegistrationMap<GnssStatusRegistrationInfo> { locationDemandChanged?.invoke() }
 
 // 存储当前活跃的目标应用 IGnssNmeaListener 映射
 private data class GnssNmeaRegistrationInfo(
     val listener: Any,
     val packageName: String,
-    val registeredTime: Long = System.currentTimeMillis()
+    val registeredTime: Long = System.currentTimeMillis(),
+    @Volatile var accepted: Boolean = true
 )
-private val activeGnssNmeaBinders = ConcurrentHashMap<IBinder, GnssNmeaRegistrationInfo>()
+private val activeGnssNmeaBinders = BinderRegistrationMap<GnssNmeaRegistrationInfo> { locationDemandChanged?.invoke() }
+private val syntheticSignalDelivery = ThreadLocal.withInitial { false }
+private val signalDeliveryHooks = ConcurrentHashMap<Pair<Class<*>, Boolean>, Boolean>()
+private var retiringSignalBinders: Set<IBinder> = emptySet()
+
+internal fun LocationHooker.prepareSignalReloadHandoff(): Array<Any> {
+    val config = readConfig()
+    val callbacks = linkedMapOf<IBinder, Any>()
+    if (config != null) {
+        activeGnssStatusBinders.filterValues { registeredPackageEnabled(config, it.packageName) }
+            .forEach { (binder, info) -> callbacks[binder] = info.listener }
+        activeGnssNmeaBinders.filterValues { registeredPackageEnabled(config, it.packageName) }
+            .forEach { (binder, info) -> callbacks[binder] = info.listener }
+    }
+    retiringSignalBinders = callbacks.keys.toSet()
+    return (callbacks.values.toList() + rawGnssDelivery?.prepareReloadHandoff().orEmpty().toList()).toTypedArray()
+}
+
+internal fun registeredPackageEnabled(config: JSONObject, pkg: String, capturedUid: Int? = null): Boolean {
+    if (!config.optBoolean("active", false)) return false
+    val caller = pkg.substringBefore(':')
+    val uid = capturedUid?.takeIf { it > 1000 } ?: runCatching { SystemHookUtils.getSystemContext()?.packageManager
+        ?.getApplicationInfo(caller, 0)?.uid }.getOrNull()
+    return SystemHookUtils.isTargetCaller(null, caller.takeUnless {
+        it in setOf("unknown", "target", "caller")
+    }, config, uid)
+}
+
+/** Native and synthetic streams must not be mixed for a managed target registration. */
+private fun LocationHooker.hookSignalDelivery(listener: Any, nmea: Boolean) {
+    val type = listener.javaClass
+    if (signalDeliveryHooks.putIfAbsent(type to nmea, true) != null) return
+    val methods = if (nmea) listOf("onNmeaReceived", "onNmeaMessage")
+        else listOf("onSvStatusChanged", "onGnssStarted", "onGnssStopped", "onFirstFix")
+    for (name in methods) runCatching {
+        XposedHelpers.hookAllMethods(type, name) { chain, _ ->
+            val recipient = (chain.thisObject as? IInterface)?.asBinder() ?: chain.thisObject as? IBinder
+            if (retiringGeneration && recipient in retiringSignalBinders) return@hookAllMethods null
+            if (!syntheticSignalDelivery.get()) {
+                val binder = (chain.thisObject as? IInterface)?.asBinder() ?: chain.thisObject as? IBinder
+                val pkg = binder?.let { if (nmea) activeGnssNmeaBinders[it]?.packageName else activeGnssStatusBinders[it]?.packageName }
+                val config = readConfig()
+                if (pkg != null && config != null && registeredPackageEnabled(config, pkg)) return@hookAllMethods null
+            }
+            chain.proceed(chain.args.toTypedArray())
+        }
+    }
+}
+
+/** Adopt accepted registrations that existed before activation or a target-scope change. */
+private fun LocationHooker.reconcileNativeSignals() {
+    val config = readConfig()
+    val gate = nativeSignalGate
+    if (config != null && gate != null) for (nmea in listOf(false, true)) {
+        for ((binder, registration) in gate.entries(nmea)) {
+            if (!binder.isBinderAlive || !registeredPackageEnabled(config, registration.packageName, registration.uid)) continue
+            val added = if (nmea) activeGnssNmeaBinders.registerIfAbsent(binder,
+                GnssNmeaRegistrationInfo(registration.listener, registration.packageName))
+            else activeGnssStatusBinders.registerIfAbsent(binder,
+                GnssStatusRegistrationInfo(registration.listener, registration.packageName))
+            if (added) {
+                hookSignalDelivery(registration.listener, nmea)
+                deliveryHandoff?.release(registration.listener)
+            }
+        }
+    }
+    locationDemandChanged?.invoke()
+}
+
+/** Observe the native permission/registration result before emitting any synthetic data. */
+private fun LocationHooker.registerSignalCallback(chain: XposedInterface.Chain, nmea: Boolean): Any? {
+    val args = chain.args.toTypedArray()
+    val config = readConfig() ?: return chain.proceed(args)
+    val pkg = SystemHookUtils.extractPackageName(chain.args)
+    val uid = SystemHookUtils.extractCallerUid(chain.args)
+    if (!config.optBoolean("active", false) || !SystemHookUtils.isTargetCaller(chain.thisObject, pkg, config, uid))
+        return chain.proceed(args)
+    val callback = chain.args.firstOrNull { it is IInterface || it is IBinder } ?: return chain.proceed(args)
+    val binder = (callback as? IInterface)?.asBinder() ?: callback as? IBinder ?: return chain.proceed(args)
+    val gnssInfo = GnssStatusRegistrationInfo(callback, pkg ?: "unknown", accepted = false)
+    val nmeaInfo = GnssNmeaRegistrationInfo(callback, pkg ?: "unknown", accepted = false)
+    val oldGnss = if (!nmea) activeGnssStatusBinders.put(binder, gnssInfo) else null
+    val oldNmea = if (nmea) activeGnssNmeaBinders.put(binder, nmeaInfo) else null
+    hookSignalDelivery(callback, nmea)
+    fun rollback() {
+        if (nmea) {
+            activeGnssNmeaBinders.rollback(binder, nmeaInfo, oldNmea)
+        } else {
+            activeGnssStatusBinders.rollback(binder, gnssInfo, oldGnss)
+        }
+    }
+    val result = try { chain.proceed(args) } catch (error: Throwable) { rollback(); throw error }
+    if (result == false) { rollback(); return result }
+    if (nmea) nmeaInfo.accepted = true else gnssInfo.accepted = true
+    nativeSignalGate?.refresh(chain.thisObject)
+    locationDemandChanged?.invoke()
+    runCatching {
+        if (nativeSignalGate?.allows(binder, nmea) != true) return@runCatching
+        if (nmea) {
+            val motion = getCurrentSpoofedMotion("WGS-84")
+            if (motion != null) {
+                val now = System.currentTimeMillis()
+                for (line in buildMockNmeaSentences(motion, RouteEngine.realisticAltitude(config), getJitteredAccuracy(), config))
+                    dispatchNmea(callback, now, line)
+            }
+        } else {
+            val status = GnssFastMockEngine.getOrCreateSpoofedGnssStatus(callback.javaClass.classLoader ?: ClassLoader.getSystemClassLoader(),
+                SatelliteProfile.count(config), config.optBoolean("enable_jitter", true), null)
+            dispatchGnssStatus(callback, status, callback.javaClass.classLoader ?: ClassLoader.getSystemClassLoader())
+        }
+    }
+    return result
+}
 
 // 存储当前活跃的目标应用 ILocationCallback (单次定位) 映射
 private data class CallbackRegistrationInfo(
@@ -90,34 +227,60 @@ private data class CallbackRegistrationInfo(
     val packageName: String,
     val registeredTime: Long = System.currentTimeMillis()
 )
-private val activeCallbackBinders = ConcurrentHashMap<IBinder, CallbackRegistrationInfo>()
+private val activeCallbackBinders = BinderRegistrationMap<NativeRegistration<CallbackRegistrationInfo>>()
+
+private fun NativeRegistrationAttempt.trackCallback(binder: IBinder?, info: CallbackRegistrationInfo) {
+    if (binder != null) {
+        track(info, { activeCallbackBinders.put(binder, it) }) { rejected, previous ->
+            activeCallbackBinders.rollback(binder, rejected, previous)
+        }
+    }
+    trackLocationInstance(info.callback)
+}
 
 // 存储当前活跃的目标应用 PendingIntent 映射
-private val activePendingIntents = ConcurrentHashMap<android.app.PendingIntent, String>()
+private val activePendingIntents = ConcurrentHashMap<android.app.PendingIntent, NativeRegistration<String>>()
+
+private fun NativeRegistrationAttempt.trackPendingIntent(pendingIntent: android.app.PendingIntent, packageName: String) {
+    track(packageName, { activePendingIntents.put(pendingIntent, it) }) { rejected, previous ->
+        if (previous == null) activePendingIntents.remove(pendingIntent, rejected)
+        else activePendingIntents.replace(pendingIntent, rejected, previous)
+    }
+}
 
 @Volatile
 private var isHeartbeatTimerStarted = false
 
 /** Flatten module-defined registrations into bootstrap arrays before handing them to new code. */
 internal fun saveSystemLocationReloadState(): Array<Any> = arrayOf(
-    activeListenerBinders.mapTo(java.util.ArrayList()) { (binder, info) ->
+    activeListenerBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
+        val info = entry.value
         arrayOf<Any>(binder, info.listener, info.packageName, info.provider, info.registeredTime)
     },
-    activeGnssStatusBinders.mapTo(java.util.ArrayList()) { (binder, info) ->
+    activeGnssStatusBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
+        arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime, info.started)
+    },
+    activeGnssNmeaBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
         arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime)
     },
-    activeGnssNmeaBinders.mapTo(java.util.ArrayList()) { (binder, info) ->
-        arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime)
-    },
-    activeCallbackBinders.mapTo(java.util.ArrayList()) { (binder, info) ->
+    activeCallbackBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
+        val info = entry.value
         arrayOf<Any>(binder, info.callback, info.packageName, info.registeredTime)
     },
-    activePendingIntents.mapTo(java.util.ArrayList()) { (pendingIntent, packageName) ->
-        arrayOf<Any>(pendingIntent, packageName)
-    }
+    activePendingIntents.mapTo(java.util.ArrayList()) { (pendingIntent, entry) ->
+        arrayOf<Any>(pendingIntent, entry.value)
+    },
+    rawGnssDelivery?.save() ?: emptyList<Array<Any>>()
 )
 
 internal fun clearSystemLocationReloadState() {
+    locationDemandChanged = null
+    nativeSignalGate?.close()
+    nativeSignalGate = null
+    rawGnssDelivery?.close()
+    rawGnssDelivery = null
+    locationDemandTimer?.close()
+    locationDemandTimer = null
     isHeartbeatTimerStarted = false
     activeListenerBinders.clear()
     activeGnssStatusBinders.clear()
@@ -134,33 +297,40 @@ internal fun LocationHooker.restoreSystemLocationReloadState(value: Any?) {
         val binder = row[0] as IBinder
         if (!binder.isBinderAlive) return@forEach
         val listener = row[1]!!
-        activeListenerBinders[binder] = ListenerRegistrationInfo(listener, row[2] as String, row[3] as String, row[4] as Long)
-        spoofedListenerInstances.add(listener)
+        activeListenerBinders[binder] = NativeRegistration(
+            ListenerRegistrationInfo(listener, row[2] as String, row[3] as String, row[4] as Long)
+        )
+        spoofedListenerInstances[listener] = NativeRegistration(Unit)
         ensureCallbackHooked(listener, "onLocationChanged")
-        runCatching { ModuleBinderDeaths.watch(binder) { activeListenerBinders.remove(binder) } }
     }
     rows(1).forEach { row ->
         val binder = row[0] as IBinder
         if (!binder.isBinderAlive) return@forEach
-        activeGnssStatusBinders[binder] = GnssStatusRegistrationInfo(row[1]!!, row[2] as String, row[3] as Long)
-        runCatching { ModuleBinderDeaths.watch(binder) { activeGnssStatusBinders.remove(binder) } }
+        activeGnssStatusBinders[binder] = GnssStatusRegistrationInfo(row[1]!!, row[2] as String, row[3] as Long, row.getOrNull(4) as? Boolean ?: true)
+        hookSignalDelivery(row[1]!!, false)
+        deliveryHandoff?.release(row[1]!!)
     }
     rows(2).forEach { row ->
         val binder = row[0] as IBinder
         if (!binder.isBinderAlive) return@forEach
         activeGnssNmeaBinders[binder] = GnssNmeaRegistrationInfo(row[1]!!, row[2] as String, row[3] as Long)
-        runCatching { ModuleBinderDeaths.watch(binder) { activeGnssNmeaBinders.remove(binder) } }
+        hookSignalDelivery(row[1]!!, true)
+        deliveryHandoff?.release(row[1]!!)
     }
     rows(3).forEach { row ->
         val binder = row[0] as IBinder
         if (!binder.isBinderAlive) return@forEach
         val callback = row[1]!!
-        activeCallbackBinders[binder] = CallbackRegistrationInfo(callback, row[2] as String, row[3] as Long)
-        spoofedListenerInstances.add(callback)
+        activeCallbackBinders[binder] = NativeRegistration(
+            CallbackRegistrationInfo(callback, row[2] as String, row[3] as Long)
+        )
+        spoofedListenerInstances[callback] = NativeRegistration(Unit)
         ensureCallbackHooked(callback, "onLocation")
-        runCatching { ModuleBinderDeaths.watch(binder) { activeCallbackBinders.remove(binder) } }
     }
-    rows(4).forEach { row -> activePendingIntents[row[0] as android.app.PendingIntent] = row[1] as String }
+    rows(4).forEach { row ->
+        activePendingIntents[row[0] as android.app.PendingIntent] = NativeRegistration(row[1] as String)
+    }
+    rawGnssDelivery?.restore(state.getOrNull(5))
 }
 
 /** 在 args 里递归找出所有 android.location.Location（单个、List、或 LocationResult 形态）并就地改写 */
@@ -213,10 +383,11 @@ private fun LocationHooker.ensureCallbackHooked(callback: Any, vararg deliveryMe
         try {
             XposedHelpers.hookAllMethods(clazz, methodName) { innerChain, _ ->
                 val binder = (innerChain.thisObject as? IInterface)?.asBinder() ?: (innerChain.thisObject as? IBinder)
+                val oneShot = if (binder != null && methodName == "onLocation") activeCallbackBinders[binder] else null
                 val config = readConfig()
                 val isGlobal = config?.optBoolean("system_hook_global_mode", false) == true
                 val isTracked = (binder != null && (activeListenerBinders.containsKey(binder) || activeCallbackBinders.containsKey(binder))) ||
-                        spoofedListenerInstances.contains(innerChain.thisObject)
+                        spoofedListenerInstances.containsKey(innerChain.thisObject)
                 val isTarget = isTracked || isGlobal
                 if (isTarget && config != null && config.optBoolean("active", false)) {
                     val motion = getCurrentSpoofedMotion("WGS-84")
@@ -231,7 +402,11 @@ private fun LocationHooker.ensureCallbackHooked(callback: Any, vararg deliveryMe
                         )
                     }
                 }
-                return@hookAllMethods innerChain.proceed(innerChain.args.toTypedArray())
+                try {
+                    innerChain.proceed(innerChain.args.toTypedArray())
+                } finally {
+                    if (binder != null && oneShot != null) activeCallbackBinders.remove(binder, oneShot)
+                }
             }
         } catch (_: Throwable) {}
     }
@@ -249,27 +424,21 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
         isHeartbeatTimerStarted = true
     }
 
-    val timer = ownReloadTimer(Timer("LocationSpoofer-SysHeartbeat", true))
-    timer.scheduleAtFixedRate(object : TimerTask() {
-        override fun run() {
+    val output = demandTimer("system_location", 1000L, fixedRate = true) {
             try {
-                try {
-                    tryHookPendingSystemServices(classLoader)
-                } catch (_: Throwable) {}
+                val config = readConfig() ?: return@demandTimer
+                if (!config.optBoolean("active", false)) return@demandTimer
 
-                if (activeListenerBinders.isEmpty() && activeGnssStatusBinders.isEmpty() && activeGnssNmeaBinders.isEmpty()) return
-                val config = readConfig() ?: return
-                if (!config.optBoolean("active", false)) return
-
-                val motion = getCurrentSpoofedMotion("WGS-84") ?: return
+                val motion = getCurrentSpoofedMotion("WGS-84") ?: return@demandTimer
                 val altitude = RouteEngine.realisticAltitude(config)
                 val accuracy = getJitteredAccuracy()
 
                 // 1. 推送定位坐标给目标应用 ILocationListener
                 if (activeListenerBinders.isNotEmpty()) {
-                    for ((binder, info) in activeListenerBinders) {
+                    for ((binder, entry) in activeListenerBinders) {
+                        val info = entry.value
                         if (!binder.isBinderAlive) {
-                            activeListenerBinders.remove(binder)
+                            activeListenerBinders.remove(binder, entry)
                             continue
                         }
                         val fakeLoc = SystemHookUtils.buildFakeLocation(
@@ -285,7 +454,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                                 dispatchFakeLocationToListener(listener, fakeLoc)
                             } catch (e: Throwable) {
                                 if (!binder.isBinderAlive) {
-                                    activeListenerBinders.remove(binder)
+                                    activeListenerBinders.remove(binder, entry)
                                 }
                             }
                         }
@@ -294,7 +463,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
 
                 // 2. 推送 20+ 真实卫星星座给目标应用 IGnssStatusListener (GnssStatus / GpsStatus)
                 if (activeGnssStatusBinders.isNotEmpty()) {
-                    val satCount = config.optInt("satellite_count", 20)
+                    val satCount = SatelliteProfile.count(config)
                     val enableJitter = config.optBoolean("enable_jitter", true)
                     val gnssStatus = GnssFastMockEngine.getOrCreateSpoofedGnssStatus(
                         classLoader,
@@ -303,8 +472,10 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                         null
                     )
                     for ((binder, info) in activeGnssStatusBinders) {
+                        if (!info.accepted) continue
+                        if (!registeredPackageEnabled(config, info.packageName) || nativeSignalGate?.allows(binder, false) != true) continue
                         if (!binder.isBinderAlive) {
-                            activeGnssStatusBinders.remove(binder)
+                            activeGnssStatusBinders.remove(binder, info)
                             continue
                         }
                         val callback = info.listener
@@ -312,7 +483,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                             dispatchGnssStatus(callback, gnssStatus, classLoader)
                         } catch (e: Throwable) {
                             if (!binder.isBinderAlive) {
-                                activeGnssStatusBinders.remove(binder)
+                                activeGnssStatusBinders.remove(binder, info)
                             }
                         }
                     }
@@ -323,8 +494,10 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                     val nmeas = buildMockNmeaSentences(motion, altitude, accuracy, config)
                     val nowMs = System.currentTimeMillis()
                     for ((binder, info) in activeGnssNmeaBinders) {
+                        if (!info.accepted) continue
+                        if (!registeredPackageEnabled(config, info.packageName) || nativeSignalGate?.allows(binder, true) != true) continue
                         if (!binder.isBinderAlive) {
-                            activeGnssNmeaBinders.remove(binder)
+                            activeGnssNmeaBinders.remove(binder, info)
                             continue
                         }
                         val callback = info.listener
@@ -334,27 +507,50 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
                             }
                         } catch (e: Throwable) {
                             if (!binder.isBinderAlive) {
-                                activeGnssNmeaBinders.remove(binder)
+                                activeGnssNmeaBinders.remove(binder, info)
                             }
                         }
                     }
                 }
             } catch (_: Throwable) {}
-        }
-    }, 1000L, 1000L)
+    }
+    locationDemandTimer = output
+    locationDemandChanged = {
+        val config = readConfig()
+        val wanted = !retiringGeneration && config != null && config.optBoolean("active", false) &&
+            (activeListenerBinders.values.any { registeredPackageEnabled(config, it.value.packageName) } ||
+             activeGnssStatusBinders.any { (binder, info) -> info.accepted && nativeSignalGate?.allows(binder, false) == true && registeredPackageEnabled(config, info.packageName) } ||
+             activeGnssNmeaBinders.any { (binder, info) -> info.accepted && nativeSignalGate?.allows(binder, true) == true && registeredPackageEnabled(config, info.packageName) })
+        output.setRequired(wanted)
+    }
+    observeConfigChanges {
+        nativeSignalGate?.refresh()
+        reconcileNativeSignals()
+    }
 }
 
 /** 向 IGnssStatusListener 代理对象主动反射调用 onSvStatusChanged，支持 Android 11+ (GnssStatus) 与 Android 7~10 */
 private fun LocationHooker.dispatchGnssStatus(listener: Any, gnssStatus: Any?, classLoader: ClassLoader) {
+    val previous = syntheticSignalDelivery.get()
+    syntheticSignalDelivery.set(true)
+    try { dispatchSyntheticGnssStatus(listener, gnssStatus, classLoader) }
+    finally { syntheticSignalDelivery.set(previous) }
+}
+
+private fun LocationHooker.dispatchSyntheticGnssStatus(listener: Any, gnssStatus: Any?, classLoader: ClassLoader) {
     val clazz = listener.javaClass
 
     // 确保 GNSS 引擎启动状态已告知客户端
-    try {
-        clazz.methods.firstOrNull { it.name == "onGnssStarted" && it.parameterCount == 0 }?.invoke(listener)
-    } catch (_: Throwable) {}
-    try {
-        clazz.methods.firstOrNull { it.name == "onFirstFix" && it.parameterCount == 1 }?.invoke(listener, 1000)
-    } catch (_: Throwable) {}
+    val binder = (listener as? IInterface)?.asBinder() ?: listener as? IBinder
+    val info = binder?.let { activeGnssStatusBinders[it] }
+    val start = if (info != null) synchronized(info) {
+        if (info.started) false else { info.started = true; true }
+    } else false
+    if (start) {
+        runCatching { clazz.methods.firstOrNull { it.name == "onGnssStarted" && it.parameterCount == 0 }?.invoke(listener) }
+        runCatching { clazz.methods.firstOrNull { it.name == "onFirstFix" && it.parameterCount == 1 }?.invoke(listener, 1000) }
+    }
+    val config = readConfig()
 
     val svMethod = clazz.methods.firstOrNull { it.name == "onSvStatusChanged" }
     if (svMethod != null) {
@@ -362,33 +558,19 @@ private fun LocationHooker.dispatchGnssStatus(listener: Any, gnssStatus: Any?, c
             if (svMethod.parameterCount == 1) {
                 // Android 11+ 标准：GnssStatus 对象 (Parcelable 跨进程分发)
                 val statusObj = gnssStatus ?: GnssFastMockEngine.getOrCreateSpoofedGnssStatus(
-                    classLoader, 20, true, null
+                    classLoader, SatelliteProfile.count(config), config?.optBoolean("enable_jitter", true) ?: true, null
                 )
                 if (statusObj != null) {
                     svMethod.invoke(listener, statusObj)
                 }
-            } else if (svMethod.parameterCount == 6) {
-                // Android 7~10 兼容：6 数组签名
-                val svCount = 20
-                val svidWithFlags = IntArray(svCount)
-                val cn0DbHz = FloatArray(svCount)
-                val elevations = FloatArray(svCount)
-                val azimuths = FloatArray(svCount)
-                val carrierFrequencies = FloatArray(svCount)
-                val rng = java.util.Random()
-                for (i in 0 until svCount) {
-                    val svid = when {
-                        i < 10 -> i + 1
-                        i < 16 -> (i - 10) + 201
-                        else -> (i - 16) + 65
-                    }
-                    svidWithFlags[i] = (svid shl 4) or 0x07
-                    cn0DbHz[i] = 30f + rng.nextFloat() * 12f
-                    elevations[i] = 20f + rng.nextFloat() * 65f
-                    azimuths[i] = rng.nextFloat() * 360f
-                    carrierFrequencies[i] = 1575420000f
-                }
-                svMethod.invoke(listener, svCount, svidWithFlags, cn0DbHz, elevations, azimuths, carrierFrequencies)
+            } else if (svMethod.parameterCount == 6 || svMethod.parameterCount == 7) {
+                val sky = SatelliteSky.snapshot(SatelliteProfile.count(config), System.currentTimeMillis(), config?.optBoolean("enable_jitter", true) ?: true)
+                val args = mutableListOf<Any>(sky.size,
+                    sky.map { GnssFastMockEngine.packedSatellite(it, classLoader) }.toIntArray(),
+                    sky.map { it.cn0 }.toFloatArray(), sky.map { it.elevation }.toFloatArray(),
+                    sky.map { it.azimuth }.toFloatArray(), sky.map { it.carrierHz ?: 0f }.toFloatArray())
+                if (svMethod.parameterCount == 7) args += sky.map { (it.cn0 - 2.5f).coerceAtLeast(26f) }.toFloatArray()
+                svMethod.invoke(listener, *args.toTypedArray())
             }
         } catch (e: Throwable) {
             logLoc("[SysLoc] dispatch onSvStatusChanged error: $e")
@@ -402,6 +584,8 @@ private fun dispatchNmea(listener: Any, timestamp: Long, sentence: String) {
     val method = clazz.methods.firstOrNull { it.name == "onNmeaReceived" }
         ?: clazz.methods.firstOrNull { it.name == "onNmeaMessage" }
     if (method != null) {
+        val previous = syntheticSignalDelivery.get()
+        syntheticSignalDelivery.set(true)
         try {
             if (method.parameterTypes.size == 2) {
                 if (method.parameterTypes[0] == Long::class.javaPrimitiveType || method.parameterTypes[0] == Long::class.java) {
@@ -413,6 +597,7 @@ private fun dispatchNmea(listener: Any, timestamp: Long, sentence: String) {
                 method.invoke(listener, sentence)
             }
         } catch (_: Throwable) {}
+        finally { syntheticSignalDelivery.set(previous) }
     }
 }
 
@@ -423,72 +608,8 @@ private fun LocationHooker.buildMockNmeaSentences(
     accuracy: Float,
     config: JSONObject
 ): List<String> {
-    val sentences = mutableListOf<String>()
-    val now = System.currentTimeMillis()
-    val calendar = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-    calendar.timeInMillis = now
-    val timeUtc = String.format(
-        java.util.Locale.US,
-        "%02d%02d%02d.00",
-        calendar.get(java.util.Calendar.HOUR_OF_DAY),
-        calendar.get(java.util.Calendar.MINUTE),
-        calendar.get(java.util.Calendar.SECOND)
-    )
-    val dateUtc = String.format(
-        java.util.Locale.US,
-        "%02d%02d%02d",
-        calendar.get(java.util.Calendar.DAY_OF_MONTH),
-        calendar.get(java.util.Calendar.MONTH) + 1,
-        calendar.get(java.util.Calendar.YEAR) % 100
-    )
-
-    val lat = motion.lat
-    val lng = motion.lng
-    val absLat = kotlin.math.abs(lat)
-    val latDeg = absLat.toInt()
-    val latMin = (absLat - latDeg) * 60.0
-    val latStr = String.format(java.util.Locale.US, "%02d%07.4f", latDeg, latMin)
-    val latHem = if (lat >= 0) "N" else "S"
-
-    val absLng = kotlin.math.abs(lng)
-    val lngDeg = absLng.toInt()
-    val lngMin = (absLng - lngDeg) * 60.0
-    val lngStr = String.format(java.util.Locale.US, "%03d%07.4f", lngDeg, lngMin)
-    val lngHem = if (lng >= 0) "E" else "W"
-
-    val speedKnots = (motion.speed * 1.943844).coerceAtLeast(0.0)
-    val speedStr = String.format(java.util.Locale.US, "%.2f", speedKnots)
-    val bearingStr = String.format(java.util.Locale.US, "%.1f", motion.bearing)
-    val altStr = String.format(java.util.Locale.US, "%.1f", altitude)
-    val satCount = config.optInt("satellite_count", 20)
-
-    // $GPRMC
-    val rmc = "GPRMC,$timeUtc,A,$latStr,$latHem,$lngStr,$lngHem,$speedStr,$bearingStr,$dateUtc,,,A"
-    sentences.add("$$rmc*${calculateNmeaChecksum(rmc)}")
-
-    // $GPGGA
-    val gga = "GPGGA,$timeUtc,$latStr,$latHem,$lngStr,$lngHem,1,$satCount,0.8,$altStr,M,0.0,M,,"
-    sentences.add("$$gga*${calculateNmeaChecksum(gga)}")
-
-    // $GPGSA
-    val gsa = "GPGSA,A,3,01,02,03,04,05,06,07,08,09,10,,,1.2,0.8,0.9"
-    sentences.add("$$gsa*${calculateNmeaChecksum(gsa)}")
-
-    // $GPGSV (GPS 10颗)
-    val gsv1 = "GPGSV,3,1,10,01,65,045,41,02,55,120,38,03,45,210,36,04,38,090,39"
-    sentences.add("$$gsv1*${calculateNmeaChecksum(gsv1)}")
-    val gsv2 = "GPGSV,3,2,10,05,32,315,35,06,28,180,37,07,22,270,33,08,18,045,34"
-    sentences.add("$$gsv2*${calculateNmeaChecksum(gsv2)}")
-    val gsv3 = "GPGSV,3,3,10,09,15,135,32,10,12,300,31"
-    sentences.add("$$gsv3*${calculateNmeaChecksum(gsv3)}")
-
-    // $BDGSV (北斗 6颗)
-    val bdgsv1 = "BDGSV,2,1,06,201,70,060,42,202,60,150,40,203,52,240,39,204,45,320,38"
-    sentences.add("$$bdgsv1*${calculateNmeaChecksum(bdgsv1)}")
-    val bdgsv2 = "BDGSV,2,2,06,205,35,110,36,206,25,200,35"
-    sentences.add("$$bdgsv2*${calculateNmeaChecksum(bdgsv2)}")
-
-    return sentences
+    return NmeaEncoder.build(motion.lat, motion.lng, motion.speed, motion.bearing, altitude,
+        accuracy, SatelliteProfile.count(config), config.optBoolean("enable_jitter", true), System.currentTimeMillis())
 }
 
 /** 向 ILocationListener 代理对象主动反射调用 onLocationChanged */
@@ -560,6 +681,8 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
         return
     }
 
+    nativeSignalGate = NativeSignalGate(this, classLoader) { reconcileNativeSignals() }.also { it.install() }
+    rawGnssDelivery = RawGnssDelivery(this).also { it.install(serviceClazz) }
     startSystemLocationHeartbeat(classLoader)
 
     if (!VendorRegistry.active.usesFrameworkLocationDelivery) {
@@ -611,6 +734,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
     for (methodName in listenerRegisterMethodNames) {
         try {
             XposedHelpers.hookAllMethods(serviceClazz, methodName) { chain, _ ->
+                var attempt: NativeRegistrationAttempt? = null
                 try {
                     val config = readConfig()
                     if (config != null) {
@@ -629,20 +753,16 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                             if (listener != null) {
                                 val binder = (listener as? IInterface)?.asBinder() ?: (listener as? IBinder)
                                 val pkgName = explicitPkg ?: "unknown"
-                                if (binder != null) {
-                                    activeListenerBinders[binder] = ListenerRegistrationInfo(
+                                val registrationAttempt = NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                                attempt = registrationAttempt
+                                registrationAttempt.trackListener(
+                                    binder,
+                                    ListenerRegistrationInfo(
                                         listener = listener,
                                         packageName = pkgName,
                                         provider = provider
                                     )
-                                    try {
-                                        ModuleBinderDeaths.watch(binder) {
-                                            activeListenerBinders.remove(binder)
-                                            logLoc("[SysHook] Listener died and removed for $pkgName")
-                                        }
-                                    } catch (_: Throwable) {}
-                                }
-                                spoofedListenerInstances.add(listener)
+                                )
                                 ensureCallbackHooked(listener, "onLocationChanged")
 
                                 logLoc("[SysHook] Registered target location listener for ${explicitPkg ?: "caller"} (total active: ${activeListenerBinders.size})"
@@ -674,7 +794,9 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                             val pendingIntent = chain.args.firstOrNull { it is android.app.PendingIntent } as? android.app.PendingIntent
                             if (pendingIntent != null) {
                                 val pkgName = explicitPkg ?: pendingIntent.creatorPackage ?: "unknown"
-                                activePendingIntents[pendingIntent] = pkgName
+                                val registrationAttempt = attempt ?: NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                                attempt = registrationAttempt
+                                registrationAttempt.trackPendingIntent(pendingIntent, pkgName)
                                 logLoc("[SysHook] Registered target location PendingIntent for $pkgName (total active: ${activePendingIntents.size})")
                             }
                         }
@@ -682,7 +804,8 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                 } catch (e: Throwable) {
                     logLoc("[SysHook] $methodName pre-hook error: $e")
                 }
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+                val nativeCall = { chain.proceed(chain.args.toTypedArray()) }
+                return@hookAllMethods if (attempt != null) attempt.proceed(nativeCall) else nativeCall()
             }
             logLoc("[SysHook] LocationManagerService.$methodName hooked")
         } catch (e: Throwable) {
@@ -726,6 +849,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
     // =========================================================================
     try {
         XposedHelpers.hookAllMethods(serviceClazz, "getCurrentLocation") { chain, _ ->
+            var attempt: NativeRegistrationAttempt? = null
             try {
                 val config = readConfig()
                 if (config != null) {
@@ -743,20 +867,10 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                         if (callback != null) {
                             val binder = (callback as? IInterface)?.asBinder() ?: (callback as? IBinder)
                             val pkgName = explicitPkg ?: "caller"
-                            if (binder != null) {
-                                activeCallbackBinders[binder] = CallbackRegistrationInfo(
-                                    callback = callback,
-                                    packageName = pkgName
-                                )
-                                try {
-                                    ModuleBinderDeaths.watch(binder) {
-                                        activeCallbackBinders.remove(binder)
-                                        logLoc("[SysLoc] Callback binder died: $pkgName")
-                                    }
-                                } catch (_: Throwable) {}
-                            }
+                            val registrationAttempt = NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                            attempt = registrationAttempt
+                            registrationAttempt.trackCallback(binder, CallbackRegistrationInfo(callback, pkgName))
 
-                            spoofedListenerInstances.add(callback)
                             ensureCallbackHooked(callback, "onLocation")
                             logLoc("[SysLoc] Registered getCurrentLocation callback for $pkgName (active callbacks: ${activeCallbackBinders.size})"
                             )
@@ -781,7 +895,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                                             onLocationMethod.invoke(callback, fakeLoc)
                                             logLoc("[SysLoc] Proactively dispatched fake location to getCurrentLocation callback for $pkgName (lat=${motion.lat}, lng=${motion.lng}, provider=$provider)"
                                             )
-                                            return@hookAllMethods createDummyCancellationSignal()
+                                            return@hookAllMethods createDummyCancellationSignal().also { registrationAttempt.accept() }
                                         } catch (t: Throwable) {
                                             logLoc("[SysLoc] proactive callback invoke failed: $t")
                                         }
@@ -794,7 +908,8 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
             } catch (e: Throwable) {
                 logLoc("[SysLoc] getCurrentLocation pre-hook failed: $e")
             }
-            return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+            val nativeCall = { chain.proceed(chain.args.toTypedArray()) }
+            return@hookAllMethods if (attempt != null) attempt.proceed(nativeCall) else nativeCall()
         }
         logLoc("[SysLoc] LocationManagerService.getCurrentLocation hooked")
     } catch (e: Throwable) {
@@ -833,61 +948,8 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
     // =========================================================================
     val registerGnssMethods = arrayOf("registerGnssStatusCallback", "addGpsStatusListener")
     for (mName in registerGnssMethods) {
-        try {
-            XposedHelpers.hookAllMethods(serviceClazz, mName) { chain, _ ->
-                try {
-                    val config = readConfig()
-                    if (config != null && config.optBoolean("active", false)) {
-                        val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-                        val overrideUid = SystemHookUtils.extractCallerUid(chain.args)
-                        val isTarget = SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config, overrideUid)
-                        if (isTarget) {
-                            val callback = chain.args.firstOrNull { arg ->
-                                arg != null && (arg is IInterface || arg is IBinder ||
-                                        LocationHooker.hasTypeByName(arg.javaClass, "android.location.IGnssStatusListener") ||
-                                        LocationHooker.hasTypeByName(arg.javaClass, "android.location.IGnssStatusCallback") ||
-                                        LocationHooker.hasTypeByName(arg.javaClass, "android.location.IGpsStatusListener") ||
-                                        arg.javaClass.name.contains("Gnss") || arg.javaClass.name.contains("Gps"))
-                            }
-                            if (callback != null) {
-                                val binder = (callback as? IInterface)?.asBinder() ?: (callback as? IBinder)
-                                if (binder != null) {
-                                    val pkgName = explicitPkg ?: "unknown"
-                                    activeGnssStatusBinders[binder] = GnssStatusRegistrationInfo(
-                                        listener = callback,
-                                        packageName = pkgName
-                                    )
-                                    try {
-                                        ModuleBinderDeaths.watch(binder) {
-                                            activeGnssStatusBinders.remove(binder)
-                                            logLoc("[SysLoc] GNSS status listener died: $pkgName")
-                                        }
-                                    } catch (_: Throwable) {}
-
-                                    // 立即向新注册的监听器派发一次卫星数据，避免等待心跳周期
-                                    val gnssStatus = GnssFastMockEngine.getOrCreateSpoofedGnssStatus(
-                                        classLoader,
-                                        config.optInt("satellite_count", 20),
-                                        config.optBoolean("enable_jitter", true),
-                                        null
-                                    )
-                                    dispatchGnssStatus(callback, gnssStatus, classLoader)
-                                    hookGnssStatusListenerCallback(callback)
-
-                                    logLoc("[SysLoc] Registered & dispatched target GNSS status callback for $pkgName (active: ${activeGnssStatusBinders.size})"
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Throwable) {
-                    logLoc("[SysLoc] $mName pre-hook failed: $e")
-                }
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-            logLoc("[SysLoc] LocationManagerService.$mName hooked")
-        } catch (e: Throwable) {
-            logLoc("[SysLoc] hook $mName failed: $e")
+        runCatching {
+            XposedHelpers.hookAllMethods(serviceClazz, mName) { chain, _ -> registerSignalCallback(chain, false) }
         }
     }
 
@@ -909,52 +971,11 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
         } catch (_: Throwable) {}
     }
 
-    val registerNmeaMethods = arrayOf("registerGnssNmeaCallback", "addGnssBatchingCallback", "addNmeaListener")
+    val registerNmeaMethods = arrayOf("registerGnssNmeaCallback", "addNmeaListener")
     for (mName in registerNmeaMethods) {
-        try {
-            XposedHelpers.hookAllMethods(serviceClazz, mName) { chain, _ ->
-                try {
-                    val config = readConfig()
-                    if (config != null && config.optBoolean("active", false)) {
-                        val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-                        val overrideUid = SystemHookUtils.extractCallerUid(chain.args)
-                        val isTarget = SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config, overrideUid)
-                        if (isTarget) {
-                            val callback = chain.args.firstOrNull { arg ->
-                                arg != null && (arg is IInterface || arg is IBinder || arg.javaClass.name.contains("Nmea"))
-                            }
-                            if (callback != null) {
-                                val binder = (callback as? IInterface)?.asBinder() ?: (callback as? IBinder)
-                                if (binder != null) {
-                                    val pkgName = explicitPkg ?: "unknown"
-                                    activeGnssNmeaBinders[binder] = GnssNmeaRegistrationInfo(
-                                        listener = callback,
-                                        packageName = pkgName
-                                    )
-                                    try {
-                                        ModuleBinderDeaths.watch(binder) {
-                                            activeGnssNmeaBinders.remove(binder)
-                                            logLoc("[SysLoc] NMEA listener died: $pkgName")
-                                        }
-                                    } catch (_: Throwable) {}
-
-                                    val motion = getCurrentSpoofedMotion("WGS-84")
-                                    if (motion != null) {
-                                        val sentences = buildMockNmeaSentences(motion, RouteEngine.realisticAltitude(config), getJitteredAccuracy(), config)
-                                        val nowMs = System.currentTimeMillis()
-                                        for (line in sentences) {
-                                            dispatchNmea(callback, nowMs, line)
-                                        }
-                                    }
-                                    logLoc("[SysLoc] Registered & dispatched NMEA callback for $pkgName (active: ${activeGnssNmeaBinders.size})")
-                                }
-                            }
-                        }
-                    }
-                } catch (_: Throwable) {}
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-        } catch (_: Throwable) {}
+        runCatching {
+            XposedHelpers.hookAllMethods(serviceClazz, mName) { chain, _ -> registerSignalCallback(chain, true) }
+        }
     }
 
     val unregisterNmeaMethods = arrayOf("unregisterGnssNmeaCallback", "removeNmeaListener")
@@ -968,38 +989,6 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                     val binder = (callback as? IInterface)?.asBinder() ?: (callback as? IBinder)
                     if (binder != null) {
                         activeGnssNmeaBinders.remove(binder)
-                    }
-                }
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
-            }
-        } catch (_: Throwable) {}
-    }
-
-    try {
-        XposedHelpers.hookAllMethods(serviceClazz, "getGnssYearOfHardware") { chain, _ ->
-            val result = chain.proceed(chain.args.toTypedArray()) as? Int
-            if (result == null || result < 2020) {
-                return@hookAllMethods 2024
-            }
-            return@hookAllMethods result
-        }
-    } catch (_: Throwable) {}
-
-    // 屏蔽目标应用的底层伪距与导航电文回调，防止泄露真实原始测量特征
-    val suppressCallbackMethods = arrayOf("registerGnssMeasurementsCallback", "registerGnssNavigationMessageCallback")
-    for (mName in suppressCallbackMethods) {
-        try {
-            XposedHelpers.hookAllMethods(serviceClazz, mName) { chain, _ ->
-                val config = readConfig()
-                if (config != null && config.optBoolean("active", false)) {
-                    val explicitPkg = SystemHookUtils.extractPackageName(chain.args)
-                    if (SystemHookUtils.isTargetCaller(chain.thisObject, explicitPkg, config)) {
-                        val cb = chain.args.firstOrNull { arg ->
-                            arg != null && arg !is String && arg !is Int
-                        }
-                        if (cb != null) {
-                            suppressCallbackMethods(cb, "onGnssMeasurementsReceived", "onGnssNavigationMessageReceived")
-                        }
                     }
                 }
                 return@hookAllMethods chain.proceed(chain.args.toTypedArray())
@@ -1052,6 +1041,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
 
         try {
             XposedHelpers.hookAllMethods(providerManagerClazz, "getCurrentLocation") { chain, _ ->
+                var attempt: NativeRegistrationAttempt? = null
                 try {
                     val config = readConfig()
                     if (config != null) {
@@ -1068,16 +1058,9 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                             if (callback != null) {
                                 val binder = (callback as? IInterface)?.asBinder() ?: (callback as? IBinder)
                                 val targetPkg = pkgName ?: "caller"
-                                if (binder != null) {
-                                    activeCallbackBinders[binder] = CallbackRegistrationInfo(
-                                        callback = callback,
-                                        packageName = targetPkg
-                                    )
-                                    try {
-                                        ModuleBinderDeaths.watch(binder) { activeCallbackBinders.remove(binder) }
-                                    } catch (_: Throwable) {}
-                                }
-                                spoofedListenerInstances.add(callback)
+                                val registrationAttempt = NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                                attempt = registrationAttempt
+                                registrationAttempt.trackCallback(binder, CallbackRegistrationInfo(callback, targetPkg))
                                 ensureCallbackHooked(callback, "onLocation")
                                 val motion = getCurrentSpoofedMotion("WGS-84")
                                 if (motion != null) {
@@ -1097,14 +1080,15 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                                         }
                                         onLocMethod?.invoke(callback, fakeLoc)
                                         logLoc("[SysLoc] LocationProviderManager.getCurrentLocation proactive dispatch for $targetPkg (lat=${motion.lat}, lng=${motion.lng}, provider=$provider)")
-                                        return@hookAllMethods createDummyCancellationSignal()
+                                        return@hookAllMethods createDummyCancellationSignal().also { registrationAttempt.accept() }
                                     }
                                 }
                             }
                         }
                     }
                 } catch (_: Throwable) {}
-                return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+                val nativeCall = { chain.proceed(chain.args.toTypedArray()) }
+                return@hookAllMethods if (attempt != null) attempt.proceed(nativeCall) else nativeCall()
             }
             logLoc("[SysLoc] LocationProviderManager.getCurrentLocation hooked")
         } catch (e: Throwable) {
@@ -1115,6 +1099,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
         for (mName in registerMethodNames) {
             try {
                 XposedHelpers.hookAllMethods(providerManagerClazz, mName) { chain, _ ->
+                    var attempt: NativeRegistrationAttempt? = null
                     val config = readConfig()
                     if (config != null) {
                         val pkgName = SystemHookUtils.extractPackageName(chain.args)
@@ -1145,15 +1130,16 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
 
                             if (listener != null) {
                                 val binder = (listener as? IInterface)?.asBinder() ?: (listener as? IBinder)
-                                if (binder != null) {
-                                    activeListenerBinders[binder] = ListenerRegistrationInfo(
+                                val registrationAttempt = NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                                attempt = registrationAttempt
+                                registrationAttempt.trackListener(
+                                    binder,
+                                    ListenerRegistrationInfo(
                                         listener = listener,
                                         packageName = pkgName ?: "target",
                                         provider = providerName
                                     )
-                                    try { ModuleBinderDeaths.watch(binder) { activeListenerBinders.remove(binder) } } catch (_: Throwable) {}
-                                }
-                                spoofedListenerInstances.add(listener)
+                                )
                                 ensureCallbackHooked(listener, "onLocationChanged")
 
                                 // 立即主动投递首帧伪造位置
@@ -1181,12 +1167,15 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                             val pi = chain.args.firstOrNull { it is android.app.PendingIntent } as? android.app.PendingIntent
                             if (pi != null) {
                                 val targetPkg = pkgName ?: pi.creatorPackage ?: "target"
-                                activePendingIntents[pi] = targetPkg
+                                val registrationAttempt = attempt ?: NativeRegistrationAttempt(nativeLocationRegistrationLock)
+                                attempt = registrationAttempt
+                                registrationAttempt.trackPendingIntent(pi, targetPkg)
                                 logLoc("[SysLoc] LocationProviderManager.$mName PendingIntent captured for $targetPkg")
                             }
                         }
                     }
-                    return@hookAllMethods chain.proceed(chain.args.toTypedArray())
+                    val nativeCall = { chain.proceed(chain.args.toTypedArray()) }
+                    return@hookAllMethods if (attempt != null) attempt.proceed(nativeCall) else nativeCall()
                 }
                 logLoc("[SysLoc] LocationProviderManager.$mName hooked")
             } catch (e: Throwable) {
@@ -1300,7 +1289,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                             val binder = (listener as? IInterface)?.asBinder() ?: (listener as? IBinder)
                             if (binder != null && activeListenerBinders.containsKey(binder)) {
                                 isTarget = true
-                            } else if (listener != null && spoofedListenerInstances.contains(listener)) {
+                            } else if (listener != null && spoofedListenerInstances.containsKey(listener)) {
                                 isTarget = true
                             }
                             if (!isTarget) {
@@ -1314,7 +1303,7 @@ internal fun LocationHooker.hookSystemLocationService(classLoader: ClassLoader) 
                                 val cbBinder = (cb as? IInterface)?.asBinder() ?: (cb as? IBinder)
                                 if (cbBinder != null && activeCallbackBinders.containsKey(cbBinder)) {
                                     isTarget = true
-                                } else if (cb != null && spoofedListenerInstances.contains(cb)) {
+                                } else if (cb != null && spoofedListenerInstances.containsKey(cb)) {
                                     isTarget = true
                                 }
                             }
@@ -1478,7 +1467,7 @@ private fun LocationHooker.hookGnssStatusListenerCallback(listener: Any) {
             val config = readConfig()
             if (config != null && config.optBoolean("active", false)) {
                 val args = chain.args
-                val satCount = config.optInt("satellite_count", 20)
+                val satCount = SatelliteProfile.count(config)
                 val enableJitter = config.optBoolean("enable_jitter", true)
 
                 if (args.size == 1) {
@@ -1494,26 +1483,14 @@ private fun LocationHooker.hookGnssStatusListenerCallback(listener: Any) {
                     }
                 } else if (args.size >= 6) {
                     // Android 7~10 兼容：6 个数组参数 (svCount, svidWithFlags, cn0DbHz, elevations, azimuths, carrierFrequencies)
-                    val svCount = satCount.coerceIn(4, 32)
-                    val svidWithFlags = IntArray(svCount)
-                    val cn0DbHz = FloatArray(svCount)
-                    val elevations = FloatArray(svCount)
-                    val azimuths = FloatArray(svCount)
-                    val carrierFrequencies = FloatArray(svCount)
-
-                    val rng = java.util.Random()
-                    for (i in 0 until svCount) {
-                        val svid = when {
-                            i < 10 -> i + 1
-                            i < 16 -> (i - 10) + 201
-                            else -> (i - 16) + 65
-                        }
-                        svidWithFlags[i] = (svid shl 4) or 0x07
-                        cn0DbHz[i] = 30f + rng.nextFloat() * 12f
-                        elevations[i] = 20f + rng.nextFloat() * 65f
-                        azimuths[i] = rng.nextFloat() * 360f
-                        carrierFrequencies[i] = 1575420000f
-                    }
+                    val loader = clazz.classLoader ?: ClassLoader.getSystemClassLoader()
+                    val sky = SatelliteSky.snapshot(satCount, System.currentTimeMillis(), enableJitter)
+                    val svCount = sky.size
+                    val svidWithFlags = sky.map { GnssFastMockEngine.packedSatellite(it, loader) }.toIntArray()
+                    val cn0DbHz = sky.map { it.cn0 }.toFloatArray()
+                    val elevations = sky.map { it.elevation }.toFloatArray()
+                    val azimuths = sky.map { it.azimuth }.toFloatArray()
+                    val carrierFrequencies = sky.map { it.carrierHz ?: 0f }.toFloatArray()
 
                     val newArgs = args.toMutableList()
                     newArgs[0] = svCount
@@ -1522,22 +1499,11 @@ private fun LocationHooker.hookGnssStatusListenerCallback(listener: Any) {
                     newArgs[3] = elevations
                     newArgs[4] = azimuths
                     newArgs[5] = carrierFrequencies
+                    if (newArgs.size >= 7) newArgs[6] = sky.map { (it.cn0 - 2.5f).coerceAtLeast(26f) }.toFloatArray()
                     return@hookAllMethods chain.proceed(newArgs.toTypedArray())
                 }
             }
             return@hookAllMethods chain.proceed(chain.args.toTypedArray())
         }
     } catch (_: Throwable) {}
-}
-
-/** 吞掉真实 GNSS 测量回调 */
-private fun suppressCallbackMethods(callback: Any, vararg methodNames: String) {
-    val clazz = callback.javaClass
-    for (mName in methodNames) {
-        try {
-            XposedHelpers.hookAllMethods(clazz, mName) { innerChain, _ ->
-                return@hookAllMethods null
-            }
-        } catch (_: Throwable) {}
-    }
 }

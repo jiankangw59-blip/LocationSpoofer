@@ -1,0 +1,88 @@
+name: Location module build
+
+on:
+  push:
+    branches:
+      - codex/location-permission-recovery-20261127
+    paths:
+      - '.github/workflows/location-module.yml'
+      - 'ADAPTATION_PROGRESS.md'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'app/**'
+      - 'app-ui/**'
+      - 'core-data/**'
+      - 'core-geo/**'
+      - 'service/**'
+      - 'xposed/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/codex/location-permission-recovery-20261127'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v4.0.4
+
+      - name: Install Android SDK packages
+        run: sdkmanager --install 'platforms;android-37.0' 'build-tools;36.0.0' 'build-tools;37.0.0'
+
+      - name: Run unit tests and build both APKs
+        shell: bash
+        run: |
+          bash ./gradlew --no-daemon --console=plain --stacktrace \
+            :core-geo:test :core-data:testGlobalDebugUnitTest \
+            :xposed:testGlobalDebugUnitTest :app-ui:testGlobalDebugUnitTest \
+            :app:assembleGlobalDebug :app:assembleGlobalDebugAndroidTest \
+            2>&1 | tee "$RUNNER_TEMP/location-module-build.log"
+
+      - name: Stage APKs and checksums
+        shell: bash
+        run: |
+          artifact_dir="$RUNNER_TEMP/location-module-artifacts"
+          mkdir -p "$artifact_dir"
+          cp app/build/outputs/apk/global/debug/app-global-arm64-v8a-debug.apk "$artifact_dir/"
+          cp app/build/outputs/apk/androidTest/global/debug/app-global-debug-androidTest.apk "$artifact_dir/"
+          cd "$artifact_dir"
+          sha256sum ./*.apk > SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT
+
+      - name: Upload temporarily signed APKs
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: location-module-global-debug
+          path: ${{ runner.temp }}/location-module-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: location-module-build-diagnostics
+          path: |
+            ${{ runner.temp }}/location-module-build.log
+            **/build/test-results/**/TEST-*.xml
+          if-no-files-found: ignore
+          retention-days: 7

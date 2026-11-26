@@ -13,12 +13,13 @@ class FrameworkConfigReceiverTest {
     private class Preferences {
         @Volatile var snapshot: String? = null
         @Volatile var listener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+        val reads = java.util.concurrent.atomic.AtomicInteger()
         // Registration is intercepted separately so the tests exercise the real listener path.
         val notifyingPrefs = Proxy.newProxyInstance(
             SharedPreferences::class.java.classLoader, arrayOf(SharedPreferences::class.java)
         ) { _, method, args ->
             when (method.name) {
-                "getString" -> snapshot
+                "getString" -> { reads.incrementAndGet(); snapshot }
                 "registerOnSharedPreferenceChangeListener" -> { listener = args!![0] as SharedPreferences.OnSharedPreferenceChangeListener; null }
                 "unregisterOnSharedPreferenceChangeListener" -> { listener = null; null }
                 else -> null
@@ -110,5 +111,84 @@ class FrameworkConfigReceiverTest {
         assertThrows(IllegalArgumentException::class.java) { FrameworkConfigSnapshot.decode(future) { error("Unexpected file") } }
         val traversal = snapshot(file = "${FrameworkConfigChannel.FILE_PREFIX}../other.json")
         assertThrows(IllegalArgumentException::class.java) { FrameworkConfigSnapshot.decode(traversal) { error("Unexpected file") } }
+    }
+
+    @Test fun healthyReceiverDoesNotReadAgainWithoutAnEvent() {
+        val prefs = Preferences().apply { snapshot = snapshot() }
+        FrameworkConfigReceiver({ prefs.notifyingPrefs }, { error("Unexpected file") }, {}, {}).use {
+            it.start()
+            assertEquals(1, prefs.reads.get())
+            it.onHostEvent()
+            Thread.sleep(1_250)
+            assertEquals("Healthy configuration must not retain the old one-second sampler", 1, prefs.reads.get())
+        }
+    }
+
+    @Test fun malformedPublicationKeepsListenerForLaterValidEvent() {
+        val prefs = Preferences().apply { snapshot = snapshot() }
+        val failed = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        FrameworkConfigReceiver({ prefs.notifyingPrefs }, { error("Unexpected file") }, {
+            if (!it.config.getBoolean("active")) stopped.countDown()
+        }, { failed.countDown() }, longArrayOf()).use {
+            it.start()
+            val listener = prefs.listener!!
+            prefs.snapshot = snapshot("not json")
+            listener.onSharedPreferenceChanged(prefs.notifyingPrefs, FrameworkConfigChannel.SNAPSHOT_KEY)
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+            assertSame(listener, prefs.listener)
+            prefs.snapshot = snapshot("{\"active\":false}")
+            prefs.listener!!.onSharedPreferenceChanged(prefs.notifyingPrefs, FrameworkConfigChannel.SNAPSHOT_KEY)
+            assertTrue(stopped.await(2, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test fun failedBootstrapHasFiniteRetriesAndLifecycleCanRestartReception() {
+        val prefs = Preferences().apply { snapshot = snapshot() }
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        val exhausted = CountDownLatch(4)
+        val delivered = CountDownLatch(1)
+        val ready = java.util.concurrent.atomic.AtomicBoolean(false)
+        FrameworkConfigReceiver({
+            attempts.incrementAndGet()
+            exhausted.countDown()
+            if (!ready.get()) throw IllegalStateException("Service is not ready")
+            prefs.notifyingPrefs
+        }, { error("Unexpected file") }, { delivered.countDown() }, {}, longArrayOf(10, 20, 30)).use {
+            it.start()
+            assertTrue(exhausted.await(2, TimeUnit.SECONDS))
+            Thread.sleep(150)
+            assertEquals(4, attempts.get())
+            ready.set(true)
+            it.onHostEvent()
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+            assertEquals(5, attempts.get())
+        }
+    }
+
+    @Test fun serviceRegistrationHintNeverWaitsForPendingFrameworkIpc() {
+        val prefs = Preferences().apply { snapshot = snapshot() }
+        val connecting = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val hinted = CountDownLatch(1)
+        val receiver = FrameworkConfigReceiver({
+            connecting.countDown()
+            check(release.await(3, TimeUnit.SECONDS))
+            prefs.notifyingPrefs
+        }, { error("Unexpected file") }, {}, {})
+        val bootstrap = Thread { receiver.start() }
+        val serviceThread = Thread { receiver.onHostEvent(); hinted.countDown() }
+        try {
+            bootstrap.start()
+            assertTrue(connecting.await(2, TimeUnit.SECONDS))
+            serviceThread.start()
+            assertTrue("A service/lifecycle Hook must not block on configuration Binder IO",
+                hinted.await(500, TimeUnit.MILLISECONDS))
+        } finally {
+            release.countDown()
+            bootstrap.join(2_000)
+            serviceThread.join(2_000)
+            receiver.close()
+        }
     }
 }

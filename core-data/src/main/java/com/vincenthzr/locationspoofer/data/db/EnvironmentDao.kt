@@ -9,6 +9,12 @@ import kotlin.math.cos
 
 @Dao
 interface EnvironmentDao {
+    @Query("SELECT * FROM wifi_devices WHERE bssid IN (:bssids)")
+    suspend fun getWifiDevices(bssids: List<String>): List<WifiDevice>
+
+    @Query("SELECT * FROM cell_devices WHERE cellKey = :key LIMIT 1")
+    suspend fun getCellDevice(key: String): CellDevice?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLocation(record: LocationRecord): Long
 

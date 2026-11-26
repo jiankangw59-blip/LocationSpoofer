@@ -105,10 +105,9 @@ internal fun LocationHooker.spoofNmeaMessage(sentence: String): String? {
         val config = readConfig() ?: return sentence
         if (!config.optBoolean("active", false)) return sentence
 
-        val motion = RouteEngine.calculateCurrentPosition(config)
-        val targetCoords = getAppTargetCoordinate(motion.lat, motion.lng, config, "WGS-84")
-        val targetLat = targetCoords.first
-        val targetLng = targetCoords.second
+        val motion = getCurrentSpoofedMotion("WGS-84") ?: return null
+        val targetLat = motion.lat
+        val targetLng = motion.lng
 
         val parts = sentence.split("*")
         val mainPart = parts[0]
@@ -142,7 +141,7 @@ internal fun LocationHooker.spoofNmeaMessage(sentence: String): String? {
             fields[4] = lngStr
             fields[5] = lngDir
             if (fields.size > 6) fields[6] = "1" // GPS Fix (Quality indicator)
-            if (fields.size > 7) fields[7] = config.optInt("satellite_count", 18).toString() // Number of satellites
+            if (fields.size > 7) fields[7] = SatelliteProfile.usedCount(SatelliteProfile.count(config)).toString()
             if (fields.size > 8) fields[8] = "0.8" // HDOP (High accuracy)
             if (fields.size > 9) fields[9] = String.format(java.util.Locale.US, "%.1f", RouteEngine.realisticAltitude(config))
             modified = true
@@ -177,21 +176,11 @@ internal fun LocationHooker.spoofNmeaMessage(sentence: String): String? {
 }
 
 internal fun LocationHooker.convertToNmeaLatitude(lat: Double): Pair<String, String> {
-    val absLat = Math.abs(lat)
-    val degrees = absLat.toInt()
-    val minutes = (absLat - degrees) * 60.0
-    val latStr = String.format(java.util.Locale.US, "%02d%08.5f", degrees, minutes)
-    val dir = if (lat >= 0) "N" else "S"
-    return Pair(latStr, dir)
+    return NmeaEncoder.coordinate(lat, true)
 }
 
 internal fun LocationHooker.convertToNmeaLongitude(lng: Double): Pair<String, String> {
-    val absLng = Math.abs(lng)
-    val degrees = absLng.toInt()
-    val minutes = (absLng - degrees) * 60.0
-    val lngStr = String.format(java.util.Locale.US, "%03d%08.5f", degrees, minutes)
-    val dir = if (lng >= 0) "E" else "W"
-    return Pair(lngStr, dir)
+    return NmeaEncoder.coordinate(lng, false)
 }
 
 internal fun LocationHooker.calculateNmeaChecksum(sentence: String): String {

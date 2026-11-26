@@ -44,6 +44,22 @@ import io.github.libxposed.api.*
 object XposedHelpers {
     lateinit var module: XposedModule
 
+    /** Bootstrap Method values can be handed to the next module classloader. */
+    val synchronousQueryMethods = ConcurrentHashMap<java.lang.reflect.Method, Boolean>()
+
+    @PublishedApi internal fun rememberSynchronousQuery(method: java.lang.reflect.Method) {
+        if ((method.declaringClass.name in setOf("com.android.server.appop.AppOpsService", "com.android.server.AppOpsService") &&
+                (method.name in MOCK_OPERATION_QUERIES || method.name in MOCK_NOTE_OPERATIONS)) ||
+            (method.declaringClass.name == "com.android.providers.settings.SettingsProvider" && method.name in setOf("call", "query"))) {
+            synchronousQueryMethods[method] = true
+        }
+        if (method.name in setOf("getScanResults", "getSingleScanResults", "getConnectionInfo", "getNetworkCapabilities",
+                "getAllCellInfo", "getCellLocation", "getSignalStrength", "getServiceState", "getServiceStateForSlot",
+                "getServiceStateForSubscriber", "getDataNetworkType", "getDataNetworkTypeForSubscriber",
+                "getNetworkType", "getNetworkTypeForSubscriber", "getVoiceNetworkType", "getVoiceNetworkTypeForSubscriber",
+                "getLastLocation")) synchronousQueryMethods[method] = true
+    }
+
     fun isModuleInitialized(): Boolean = ::module.isInitialized
 
     private val fieldCache = ConcurrentHashMap<String, Field?>()
@@ -252,6 +268,7 @@ object XposedHelpers {
                             }
                         })
                     handles.add(handle)
+                    rememberSynchronousQuery(method)
                     hooked++
                 } catch (e: Throwable) {
                     com.vincenthzr.locationspoofer.xposed.diagnostics.HookStatus.error("${clazz.name}#$methodName", e)
@@ -283,7 +300,7 @@ object XposedHelpers {
 }
 
 object XposedBridge {
-    private val openCellLogLastTimes = ConcurrentHashMap<String, Long>()
+    private val routineLogs = EventLogLimiter({ android.os.SystemClock.elapsedRealtime() })
 
     fun log(msg: String) {
         try {
@@ -304,10 +321,7 @@ object XposedBridge {
         } catch (_: Throwable) {}
     }
     fun logOpenCellIdEvery(key: String, msg: String, intervalMs: Long = 5_000L) {
-        val now = System.currentTimeMillis()
-        val last = openCellLogLastTimes[key] ?: 0L
-        if (now - last > intervalMs) {
-            openCellLogLastTimes[key] = now
+        if (routineLogs.allow(key, intervalMs)) {
             try {
                 android.util.Log.i("LocationSpoofer", "[$key] $msg")
             } catch (_: Throwable) {}

@@ -147,26 +147,6 @@ internal fun LocationHooker.hookWifiScanResults(classLoader: ClassLoader) {
                         }
                     }
 
-                    if (fakeList.isEmpty()) {
-                        val lat = config.optDouble("lat", 0.0)
-                        val lng = config.optDouble("lng", 0.0)
-                        val seed = ((lat * 100000).toLong() xor (lng * 100000).toLong())
-                        val random = java.util.Random(seed)
-                        for (i in 0 until 5) {
-                            val fakeWifi = org.json.JSONObject()
-                            fakeWifi.put("ssid", "WIFI_${random.nextInt(9000) + 1000}")
-                            val bssid = String.format(
-                                "%02x:%02x:%02x:%02x:%02x:%02x",
-                                random.nextInt(256), random.nextInt(256), random.nextInt(256),
-                                random.nextInt(256), random.nextInt(256), random.nextInt(256)
-                            )
-                            fakeWifi.put("bssid", bssid)
-                            fakeWifi.put("level", -40 - random.nextInt(50))
-                            fakeWifi.put("frequency", if (random.nextBoolean()) 2412 else 5180)
-                            fakeWifi.put("capabilities", "[WPA2-PSK-CCMP][ESS]")
-                            addFakeScanResult(fakeWifi)
-                        }
-                    }
                 } catch (e: Throwable) { /* 忽略 */
                 }
             }

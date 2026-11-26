@@ -56,6 +56,9 @@ object AospVendor : SystemHookVendor {
             "com.android.server.appop.AppOpsService",
             "com.android.server.AppOpsService",
         )
+        SystemComponent.SETTINGS_PROVIDER -> listOf(
+            "com.android.providers.settings.SettingsProvider",
+        )
         SystemComponent.BLUETOOTH_SCAN_SERVICE -> listOf(
             "com.android.bluetooth.le_scan.ScanBinder",
             "com.android.bluetooth.gatt.GattService",

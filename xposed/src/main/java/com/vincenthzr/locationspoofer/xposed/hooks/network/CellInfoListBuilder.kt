@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.lang.reflect.Member
 import kotlin.math.*
 import io.github.libxposed.api.*
+import com.vincenthzr.locationspoofer.utils.RadioObservation
 
 /**
  * 根据经纬度构造伪基站列表（CellInfo），及相关辅助函数。
@@ -33,13 +34,13 @@ internal fun LocationHooker.buildFakeCellInfoList(
 ): java.util.ArrayList<Any> {
     val result = java.util.ArrayList<Any>()
 
-    val cellArray = config?.optJSONArray("cell_json")
+    val cellArray = org.json.JSONArray(CellProfile.cells(config))
+    val observation = RadioObservation.timestamp(android.os.SystemClock.elapsedRealtimeNanos(), RadioObservation.CELL_PERIOD_NS)
     XposedBridge.logOpenCellIdEvery(
         "buildFakeCellInfoList:called:${cellArray?.length() ?: 0}",
         "buildFakeCellInfoList called cellJsonCount=${cellArray?.length() ?: 0}"
     )
     if (cellArray != null && cellArray.length() > 0) {
-        var hasLteOrNr = false
         var gsmCount = 0
         var wcdmaCount = 0
         var lteCount = 0
@@ -50,10 +51,7 @@ internal fun LocationHooker.buildFakeCellInfoList(
                 val obj = cellArray.getJSONObject(i)
                 val type =
                     normalizeCellType(obj.optString("type", obj.optString("radio", "LTE")))
-                val isRegistered = obj.optBoolean("isRegistered", i == 0)
-                if (type == "LTE" || type == "NR") {
-                    hasLteOrNr = true
-                }
+                val isRegistered = obj.optBoolean("isRegistered", false)
                 when (type) {
                     "GSM" -> gsmCount++
                     "WCDMA", "UMTS" -> wcdmaCount++
@@ -62,16 +60,17 @@ internal fun LocationHooker.buildFakeCellInfoList(
                 }
 
                 val mcc = positiveJsonInt(obj, "mcc", default = 460)
-                val mnc = positiveJsonInt(obj, "mnc", "net", default = 0)
+                val mnc = CellIdentityValues.mnc(obj) ?: 0
                 val tacOrLac = cellAreaCode(obj, 10000)
-                val ciOrCid = cellIdentityCode(obj, 100000)
-                val pci = positiveJsonInt(
-                    obj,
-                    "pci",
-                    "psc",
-                    default = (ciOrCid % 504).coerceIn(0, 503)
-                )
-                val dbm = signalDbm(obj, i)
+                val ciOrCid = if (type == "NR") 0 else requireNotNull(CellIdentityValues.identity(obj, type)).toInt()
+                val nci = if (type == "NR") requireNotNull(CellIdentityValues.nrIdentity(obj)) {
+                    "Missing or invalid 36-bit NR NCI"
+                } else ciOrCid.toLong()
+                val pci = obj.optInt(when (type) { "GSM" -> "bsic"; "WCDMA", "UMTS" -> "psc"; else -> "pci" }, Int.MAX_VALUE)
+                    .takeIf { it in 0..when (type) { "NR" -> 1007; "GSM" -> 63; "WCDMA", "UMTS" -> 511; else -> 503 } }
+                    ?: Int.MAX_VALUE
+                val dbm = RadioObservation.dbm(CellProfile.signal(obj), CellProfile.identity(obj), observation,
+                    config?.optBoolean("enable_jitter", true) == true)
                 if (firstSummary == null) {
                     firstSummary =
                         "$type/$mcc-$mnc area=$tacOrLac identity=$ciOrCid dbm=$dbm registered=$isRegistered"
@@ -136,7 +135,7 @@ internal fun LocationHooker.buildFakeCellInfoList(
                     XposedHelpers.setLongField(
                         cellInfo,
                         "mTimeStamp",
-                        android.os.SystemClock.elapsedRealtimeNanos()
+                        observation
                     )
                 } catch (e: Throwable) {
                 }
@@ -170,7 +169,7 @@ internal fun LocationHooker.buildFakeCellInfoList(
                 val mccStr = mcc.toString()
                 val mncStr = if (mnc < 10) "0$mnc" else mnc.toString()
                 val cellIdentity = constructCellIdentityByType(
-                    type, cellIdentityClass, mcc, mccStr, mnc, mncStr, tacOrLac, ciOrCid, pci
+                    type, cellIdentityClass, mcc, mccStr, mnc, mncStr, tacOrLac, ciOrCid, pci, nci
                 )
                 if (LocationHooker.VERBOSE_CELL_BUILD_LOGS) {
                     XposedBridge.logOpenCellId("Built $type identity: MCC=$mcc MNC=$mnc TAC/LAC=$tacOrLac CI/CID=$ciOrCid PCI=$pci -> ${cellIdentity.javaClass.simpleName}")
@@ -182,11 +181,12 @@ internal fun LocationHooker.buildFakeCellInfoList(
                         "LTE" -> "getCi"
                         "GSM" -> "getLac"
                         "WCDMA", "UMTS" -> "getLac"
-                        "NR" -> "getPci"
+                        "NR" -> "getNci"
                         else -> "getCi"
                     }
-                    val readBack = XposedHelpers.callMethod(cellIdentity, verifyMethod) as? Int
-                    if (readBack == Int.MAX_VALUE || readBack == -1) {
+                    val readBack = (XposedHelpers.callMethod(cellIdentity, verifyMethod) as? Number)?.toLong()
+                    if (readBack == -1L || readBack == Long.MAX_VALUE ||
+                        (type == "NR" && readBack != nci) || (type != "NR" && readBack == Int.MAX_VALUE.toLong())) {
                         XposedBridge.logOpenCellId("WARNING: $type.$verifyMethod()=$readBack, identity injection may have failed")
                     } else if (LocationHooker.VERBOSE_CELL_BUILD_LOGS) {
                         XposedBridge.logOpenCellId("VERIFY OK: $type.$verifyMethod()=$readBack")
@@ -317,6 +317,7 @@ internal fun LocationHooker.buildFakeCellInfoList(
                     }
                 }
 
+                runCatching { XposedHelpers.callMethod(css, "updateLevel", null, null) }
                 // 将 CellSignalStrength 存入 CellInfo (兼容新老版本字段名)
                 val cssField = when (type) {
                     "GSM" -> "mCellSignalStrengthGsm"
@@ -341,36 +342,19 @@ internal fun LocationHooker.buildFakeCellInfoList(
                 )
             }
         }
-        if (result.isNotEmpty() && !hasLteOrNr) {
-            try {
-                val seed = org.json.JSONObject(cellArray.getJSONObject(0).toString()).apply {
-                    put("type", "LTE")
-                    put("radio", "LTE")
-                    put("isRegistered", true)
-                }
-                val syntheticConfig = org.json.JSONObject().put(
-                    "cell_json",
-                    org.json.JSONArray().put(seed)
-                )
-                val syntheticLte = buildFakeCellInfoList(classLoader, lat, lng, syntheticConfig)
-                if (syntheticLte.isNotEmpty()) {
-                    result.add(0, syntheticLte[0])
-                    XposedBridge.logOpenCellIdEvery(
-                        "buildFakeCellInfoList:synthetic-lte",
-                        "OpenCellID data has no LTE/NR cells; prepended synthetic LTE primary cell for 4G-only readers",
-                        60_000L
-                    )
-                }
-            } catch (e: Throwable) {
-                XposedBridge.logOpenCellId("Failed to prepend synthetic LTE primary cell", e)
-            }
-        }
         XposedBridge.logOpenCellIdEvery(
-            "buildFakeCellInfoList:return:$lteCount:$nrCount:$wcdmaCount:$gsmCount:${result.size}:$firstSummary",
+            "buildFakeCellInfoList:return",
             "buildFakeCellInfoList returning ${result.size} cells from cell_json types=LTE:$lteCount NR:$nrCount WCDMA:$wcdmaCount GSM:$gsmCount first=$firstSummary"
         )
         return result
     }
+
+    XposedBridge.logOpenCellIdEvery(
+        "buildFakeCellInfoList:empty",
+        "buildFakeCellInfoList has no cell_json; returning an empty observation",
+        60_000L
+    )
+    return java.util.ArrayList<Any>()
 
     val coordSeed = ((lat * 1e5).toLong() xor (lng * 1e5).toLong())
     XposedBridge.logOpenCellIdEvery(
@@ -495,7 +479,7 @@ internal fun LocationHooker.normalizeCellType(rawType: String): String {
 }
 
 internal fun LocationHooker.cellAreaCode(cell: org.json.JSONObject, default: Int): Int =
-    positiveJsonInt(cell, "tac", "lac", "area", default = default)
+    CellIdentityValues.area(cell, normalizeCellType(cell.optString("type", cell.optString("radio", "LTE")))) ?: default
 
 internal fun LocationHooker.cellIdentityCode(cell: org.json.JSONObject, default: Int): Int =
     positiveJsonInt(cell, "ci", "cid", "cellid", "cell", default = default)
@@ -527,21 +511,13 @@ internal fun LocationHooker.positiveJsonInt(
 }
 
 internal fun LocationHooker.signalDbm(cell: org.json.JSONObject, index: Int): Int {
-    val direct = cell.optInt("dbm", Int.MIN_VALUE)
-    if (direct in -140..-40) return direct
-
-    val average = cell.optInt("averageSignalStrength", Int.MIN_VALUE)
-    if (average in -140..-40) return average
-
-    val signal = cell.optInt("signal", Int.MIN_VALUE)
-    if (signal in -140..-40) return signal
-
-    return (-70 - index * 3).coerceAtLeast(-110)
+    return RadioObservation.dbm(CellProfile.signal(cell), CellProfile.identity(cell),
+        RadioObservation.timestamp(android.os.SystemClock.elapsedRealtimeNanos(), RadioObservation.CELL_PERIOD_NS),
+        readConfig()?.optBoolean("enable_jitter", true) == true)
 }
 
 internal fun LocationHooker.firstCell(config: org.json.JSONObject?): org.json.JSONObject? {
-    val cells = config?.optJSONArray("cell_json") ?: return null
-    return if (cells.length() > 0) cells.optJSONObject(0) else null
+    return CellProfile.cells(config).firstOrNull()
 }
 
 internal fun LocationHooker.isTelephonyCallbackListener(

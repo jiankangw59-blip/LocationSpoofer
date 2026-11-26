@@ -45,4 +45,39 @@ class HookStatusReportTest {
         assertNull(HookStatusReport.parse("SUCCESS"))
         assertNull(HookStatusReport.parse(""))
     }
+
+    @Test
+    fun `distinguishes a different snapshot with the same timestamp from the current one`() {
+        val current = HookStatusReport.parse("""{"process":"SYSTEM_SERVER","pid":11,
+            "config":{"snapshot_id":"current","modified":1000}}""")!!
+        val old = current.copy(process = "PHONE", pid = 12, snapshotId = "previous")
+        val legacy = HookStatusReport.parse("""{"process":"BLUETOOTH","pid":13,
+            "config":{"modified":1000}}""")
+        val check = HookConfigCheck.compare("current", "current", mapOf("SYSTEM_SERVER" to 11, "PHONE" to 12, "BLUETOOTH" to 13),
+            mapOf("SYSTEM_SERVER" to current, "PHONE" to old, "BLUETOOTH" to legacy))
+        assertEquals(HookConfigCheck.State.COMPARED, check.state)
+        assertEquals(HookConfigCheck.HostState.MATCHED, check.hosts["SYSTEM_SERVER"])
+        assertEquals(HookConfigCheck.HostState.DIFFERENT_SNAPSHOT, check.hosts["PHONE"])
+        assertEquals(HookConfigCheck.HostState.NO_SNAPSHOT_ID, check.hosts["BLUETOOTH"])
+    }
+
+    @Test
+    fun `a matching snapshot in a report from an old process is not confirmation`() {
+        val old = HookStatusReport.parse("""{"process":"SYSTEM_SERVER","pid":11,"config":{"snapshot_id":"current"}}""")!!
+        val check = HookConfigCheck.compare("current", "current", mapOf("SYSTEM_SERVER" to 99, "PHONE" to 12),
+            mapOf("SYSTEM_SERVER" to old))
+        assertEquals(HookConfigCheck.HostState.OLD_PROCESS, check.hosts["SYSTEM_SERVER"])
+        assertEquals(HookConfigCheck.HostState.NO_REPORT, check.hosts["PHONE"])
+        assertEquals(HookConfigCheck.HostState.NO_RUNNING_TARGET, check.hosts["BLUETOOTH"])
+    }
+
+    @Test
+    fun `checks require a live target list and a stable framework snapshot`() {
+        val changing = HookConfigCheck.compare("first", "second", emptyMap(), emptyMap())
+        assertEquals(HookConfigCheck.State.CHANGING, changing.state)
+        assertTrue(changing.hosts.isEmpty())
+        val unavailable = HookConfigCheck.compare("current", "current", null, emptyMap())
+        assertEquals(HookConfigCheck.State.UNAVAILABLE, unavailable.state)
+        assertTrue(unavailable.hosts.isEmpty())
+    }
 }

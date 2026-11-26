@@ -229,10 +229,12 @@ fun MainScreen(
             uiState = uiState,
             isDark = isDark
         )
+        uiState.moduleConnectionState == com.vincenthzr.locationspoofer.utils.ModuleConnectionState.CONNECTING ->
+            InitializingScreen(isDark, stringResource(R.string.lsposed_connecting))
         !uiState.isLSPosedActive -> BlockingScreen(
             icon = Icons.Rounded.Extension,
-            title = stringResource(R.string.lsposed_not_active),
-            message = stringResource(R.string.lsposed_message),
+            title = stringResource(R.string.lsposed_unavailable),
+            message = stringResource(R.string.lsposed_connection_failed),
             isDark = isDark
         )
         else -> com.vincenthzr.locationspoofer.ui.screen.MainScaffoldScreen(
