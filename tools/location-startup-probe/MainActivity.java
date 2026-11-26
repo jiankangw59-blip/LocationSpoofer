@@ -59,7 +59,7 @@ public final class MainActivity extends Activity {
                         reply(RESULT_OK, file);
                     }
                 } else if (recorder.hasPermission()) {
-                    restartRecording("control_restart", received);
+                    restartRecording("control_restart", received, includeNmea(intent.getExtras()));
                     reply(RESULT_OK, "restart_requested");
                 } else {
                     reply(RESULT_CANCELED, "location_permission_missing");
@@ -79,6 +79,14 @@ public final class MainActivity extends Activity {
             Log.i(TAG, "Control result " + result + " " + detail);
         }
     };
+
+    @SuppressWarnings("deprecation")
+    private static boolean includeNmea(Bundle extras) {
+        if (extras == null || !extras.containsKey("include_nmea")) return true;
+        if (extras.get("include_nmea") instanceof Boolean include) return include;
+        throw new IllegalArgumentException("include_nmea must be a Boolean extra");
+    }
+
     private StartupRecorder recorder;
     private boolean autoRecord;
     private boolean visible;
@@ -194,7 +202,7 @@ public final class MainActivity extends Activity {
         permissionButton = addButton(content, "授予定位权限", () -> requestPermissions(new String[]{
             Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST));
         restartButton = addButton(content, "重新记录 30 秒",
-            () -> restartRecording("manual", StartupRecorder.Stamp.now()));
+            () -> restartRecording("manual", StartupRecorder.Stamp.now(), true));
         stopButton = addButton(content, "停止记录", () -> recorder.stop(owner, "manual_stop", null, StartupRecorder.Stamp.now()));
         copyButton = addButton(content, "复制当前报告", this::copyReport);
         noticeView = addText(content, "", 14);
@@ -202,8 +210,8 @@ public final class MainActivity extends Activity {
         setContentView(scroll);
     }
 
-    private void restartRecording(String trigger, StartupRecorder.Stamp entry) {
-        recorder.begin(trigger, owner, entry);
+    private void restartRecording(String trigger, StartupRecorder.Stamp entry, boolean includeNmea) {
+        recorder.begin(trigger, owner, entry, includeNmea);
         recorder.mark(owner, "activity_window_focus", entry, hasWindowFocus(), false);
         notice = "control_restart".equals(trigger) ? "已请求重新记录，时间窗口从接收诊断命令开始。"
             : "手动记录，时间窗口从本次点击开始。";

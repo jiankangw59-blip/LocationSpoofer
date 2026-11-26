@@ -34,10 +34,9 @@ import org.json.JSONObject;
 public final class ShellLocationReferenceMain {
     private static final String GPS = LocationManager.GPS_PROVIDER;
     private static final int DEFAULT_DURATION_MS = 30_000;
-    private static final int MAX_DURATION_MS = 90_000;
-    private static final int MAX_NMEA_SENTENCES = 4_096;
+    private static final int MAX_DURATION_MS = 180_000;
+    private static final int NMEA_SENTENCES_PER_90_SECONDS = 4_096;
     private static final int MAX_NMEA_CHARS = 4_096;
-    private static final int MAX_STATUS_FRAMES = 180;
     private static final int MAX_SATELLITES_PER_FRAME = 256;
     private static final int MAX_GNSS_LIFECYCLE_EVENTS = 64;
 
@@ -58,7 +57,7 @@ public final class ShellLocationReferenceMain {
                 "adds_gnss_demand", request, "uid", Process.myUid(), "pid", Process.myPid(),
                 "sdk_int", Build.VERSION.SDK_INT, "build_fingerprint", Build.FINGERPRINT));
             if (durationMs < 0) throw new IllegalArgumentException(
-                "Expected [--request [--duration-ms 30000..90000]] [--identity system]");
+                "Expected [--request [--duration-ms 30000..180000]] [--identity system]");
             phase = "reference_identity";
             Context context = referenceContext(report, identity);
             phase = "gps_cache";
@@ -114,13 +113,9 @@ public final class ShellLocationReferenceMain {
         if (args.length == 0) return 0;
         if (!"--request".equals(args[0])) return -1;
         if (args.length == 1) return DEFAULT_DURATION_MS;
-        if (args.length != 3 || !"--duration-ms".equals(args[1]) || args[2].length() != 5) return -1;
-        try {
-            int duration = Integer.parseInt(args[2]);
-            return duration >= DEFAULT_DURATION_MS && duration <= MAX_DURATION_MS ? duration : -1;
-        } catch (NumberFormatException failure) {
-            return -1;
-        }
+        if (args.length != 3 || !"--duration-ms".equals(args[1]) || !args[2].matches("[1-9][0-9]{4,5}")) return -1;
+        int duration = Integer.parseInt(args[2]);
+        return duration >= DEFAULT_DURATION_MS && duration <= MAX_DURATION_MS ? duration : -1;
     }
 
     private static Context referenceContext(Report report, Identity identity)
@@ -347,8 +342,8 @@ public final class ShellLocationReferenceMain {
         private final String sessionId;
         private final CaptureCount gpsCallbacks;
         private final CaptureCount currentLocation = new CaptureCount(1);
-        private final CaptureCount nmeaSentences = new CaptureCount(MAX_NMEA_SENTENCES);
-        private final CaptureCount statusFrames = new CaptureCount(MAX_STATUS_FRAMES);
+        private final CaptureCount nmeaSentences;
+        private final CaptureCount statusFrames;
         private final CaptureCount gnssEvents = new CaptureCount(MAX_GNSS_LIFECYCLE_EVENTS);
         private int sequence;
         private int locationCount;
@@ -361,6 +356,8 @@ public final class ShellLocationReferenceMain {
         Report(Stamp started, Identity identity, int maxUpdates) {
             sessionId = identity.label + "-" + started.wallMs + "-" + Process.myPid() + "-" + started.elapsedNs;
             gpsCallbacks = new CaptureCount(maxUpdates);
+            statusFrames = new CaptureCount(2 * maxUpdates);
+            nmeaSentences = new CaptureCount((NMEA_SENTENCES_PER_90_SECONDS * maxUpdates + 89) / 90);
         }
 
         JSONObject limits() {

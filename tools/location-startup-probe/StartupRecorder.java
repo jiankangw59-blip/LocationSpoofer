@@ -104,6 +104,10 @@ final class StartupRecorder {
     void unobserve(Runnable observer) { if (this.observer == observer) this.observer = null; }
 
     void begin(String trigger, long owner, Stamp origin) {
+        begin(trigger, owner, origin, true);
+    }
+
+    void begin(String trigger, long owner, Stamp origin, boolean includeNmea) {
         if (!hasPermission()) return;
         if (owner != 0) declaredOwner = owner;
         Session active = current;
@@ -111,7 +115,7 @@ final class StartupRecorder {
         enqueue(true, handler -> {
             Session previous = current;
             if (previous != null && previous.running) finish(previous, "manual_restart", origin);
-            startOnWorker(new Session(handler, trigger, owner, origin), null);
+            startOnWorker(new Session(handler, trigger, owner, origin, includeNmea), null);
         });
     }
 
@@ -125,7 +129,7 @@ final class StartupRecorder {
                 finish(session, "duration_elapsed", stamp);
             }
             if (session == null || !session.running) {
-                startOnWorker(new Session(handler, trigger, owner, stamp), event);
+                startOnWorker(new Session(handler, trigger, owner, stamp, true), event);
                 return;
             }
             if (session.owner != owner) {
@@ -533,6 +537,10 @@ final class StartupRecorder {
 
     private void registerNmea(Session session) {
         if (!capturing(session, Stamp.now())) return;
+        if (!session.includeNmea) {
+            nmeaLifecycle(session, "nmea_registration", null, "disabled_by_test", null, null);
+            return;
+        }
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
             nmeaLifecycle(session, "nmea_registration", null, "permission_missing", null, null);
             return;
@@ -809,6 +817,7 @@ final class StartupRecorder {
         final String trigger;
         final Stamp origin;
         final long deadline;
+        final boolean includeNmea;
         final Map<String, LocationListener> listeners = new LinkedHashMap<>();
         final Map<String, CancellationSignal> requests = new LinkedHashMap<>();
         final int[] cached = new int[3];
@@ -846,11 +855,12 @@ final class StartupRecorder {
         String reason;
         String fileError;
 
-        Session(Handler handler, String trigger, long owner, Stamp origin) {
+        Session(Handler handler, String trigger, long owner, Stamp origin, boolean includeNmea) {
             this.handler = handler;
             this.trigger = trigger;
             this.owner = owner;
             this.origin = origin;
+            this.includeNmea = includeNmea;
             this.deadline = origin.elapsedNs + CAPTURE_NS;
         }
     }
