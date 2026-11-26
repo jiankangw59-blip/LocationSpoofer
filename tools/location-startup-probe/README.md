@@ -35,6 +35,18 @@ adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.cod
 
 第一条成功时返回策略快照文件名，第二条返回 `restart_requested`。该结果只确认已请求重录，实际登记与回调以新会话和系统定位服务记录为准。策略快照不调用 AppOps note 或修改权限、定位开关与 Thanox 设置。
 
+### 高程模型参考
+
+1.5（versionCode 6）新增显式的前台高程模型命令。先让启动录制结束，再从已有的本地测试输入填入 WGS84 纬度、经度与椭球高（米）。发送方仍需持有 `android.permission.DUMP`，且页面可见并持有焦点。
+
+```sh
+adb shell am broadcast --receiver-foreground -a com.codex.locationstartup.CAPTURE_ALTITUDE_REFERENCE -p com.codex.locationstartup --es lat "$LAT" --es lon "$LON" --es alt "$ALT"
+```
+
+广播成功返回预计的 `altitude-reference-*.json` 文件名。工作线程完成后，使用 `adb shell run-as com.codex.locationstartup cat files/location-startup/文件名` 读取本地结果。最多保留 20 份高程报告，重复命令在前一次运行中返回 `altitude_reference_busy`。
+
+转换使用 Android 34 及以上的公开 `AltitudeConverter`，并将合成参考输入的副本以垂直精度 0 送入当前 ROM 模型。JSON 保留原始输入、输出、SDK 和固件信息、起止时间、`h − H` 分离及模型返回的 MSL 精度。转换失败或 API 不支持时，分离和精度留空。该命令不会发起位置请求，结果仅用于验证平台模型。
+
 未收到定位不代表无泄漏，mock 字段也不能单独判断定位来源。未出现 `session_end` 的报告属于未完成采样。报告包含原始坐标，请按需分享。
 
 ### Shell GPS 参考

@@ -27,6 +27,7 @@ public final class MainActivity extends Activity {
     private static final int LOCATION_PERMISSION_REQUEST = 1;
     private static final String TAG = "LocationStartupProbe";
     private static final String CAPTURE_POLICY = "com.codex.locationstartup.CAPTURE_POLICY";
+    private static final String CAPTURE_ALTITUDE_REFERENCE = "com.codex.locationstartup.CAPTURE_ALTITUDE_REFERENCE";
     private static final String RESTART_RECORDING = "com.codex.locationstartup.RESTART_RECORDING";
     private final long owner = SystemClock.elapsedRealtimeNanos();
     private final Runnable observer = this::render;
@@ -34,7 +35,8 @@ public final class MainActivity extends Activity {
         @Override public void onReceive(Context context, Intent intent) {
             StartupRecorder.Stamp received = StartupRecorder.Stamp.now();
             String action = intent.getAction();
-            if (!CAPTURE_POLICY.equals(action) && !RESTART_RECORDING.equals(action)) return;
+            if (!CAPTURE_POLICY.equals(action) && !RESTART_RECORDING.equals(action)
+                    && !CAPTURE_ALTITUDE_REFERENCE.equals(action)) return;
             if (!visible || !hasWindowFocus()) {
                 reply(RESULT_CANCELED, "not_foreground");
                 return;
@@ -45,6 +47,16 @@ public final class MainActivity extends Activity {
                     notice = "权限状态已记录 · " + file;
                     render();
                     reply(RESULT_OK, file);
+                } else if (CAPTURE_ALTITUDE_REFERENCE.equals(action)) {
+                    String file = AltitudeReference.enqueue(getApplicationContext(), received,
+                        intent.getStringExtra("lat"), intent.getStringExtra("lon"), intent.getStringExtra("alt"));
+                    if (file == null) {
+                        reply(RESULT_CANCELED, "altitude_reference_busy");
+                    } else {
+                        notice = "已接受高程模型诊断 · " + file;
+                        render();
+                        reply(RESULT_OK, file);
+                    }
                 } else if (recorder.hasPermission()) {
                     restartRecording("control_restart", received);
                     reply(RESULT_OK, "restart_requested");
@@ -138,6 +150,7 @@ public final class MainActivity extends Activity {
     private void registerControlReceiver() {
         IntentFilter filter = new IntentFilter(CAPTURE_POLICY);
         filter.addAction(RESTART_RECORDING);
+        filter.addAction(CAPTURE_ALTITUDE_REFERENCE);
         try {
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(controlReceiver, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
