@@ -22,6 +22,7 @@ import android.os.IBinder
 import android.os.IInterface
 import android.util.Log
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
+import com.vincenthzr.locationspoofer.xposed.diagnostics.HookStatus
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemClassLocator
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions.ColorOs16Vendor
