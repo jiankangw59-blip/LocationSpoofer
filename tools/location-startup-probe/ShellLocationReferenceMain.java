@@ -36,6 +36,7 @@ public final class ShellLocationReferenceMain {
     private static final int DEFAULT_DURATION_MS = 30_000;
     private static final int MAX_DURATION_MS = 180_000;
     private static final int NMEA_SENTENCES_PER_90_SECONDS = 4_096;
+    private static final int BASE_STATUS_FRAMES = 180;
     private static final int MAX_NMEA_CHARS = 4_096;
     private static final int MAX_SATELLITES_PER_FRAME = 256;
     private static final int MAX_GNSS_LIFECYCLE_EVENTS = 64;
@@ -356,8 +357,9 @@ public final class ShellLocationReferenceMain {
         Report(Stamp started, Identity identity, int maxUpdates) {
             sessionId = identity.label + "-" + started.wallMs + "-" + Process.myPid() + "-" + started.elapsedNs;
             gpsCallbacks = new CaptureCount(maxUpdates);
-            statusFrames = new CaptureCount(2 * maxUpdates);
-            nmeaSentences = new CaptureCount((NMEA_SENTENCES_PER_90_SECONDS * maxUpdates + 89) / 90);
+            statusFrames = new CaptureCount(Math.max(BASE_STATUS_FRAMES, 2 * maxUpdates));
+            nmeaSentences = new CaptureCount(Math.max(NMEA_SENTENCES_PER_90_SECONDS,
+                (NMEA_SENTENCES_PER_90_SECONDS * maxUpdates + 89) / 90));
         }
 
         JSONObject limits() {
