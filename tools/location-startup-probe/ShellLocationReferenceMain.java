@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -38,7 +37,7 @@ public final class ShellLocationReferenceMain {
     private static final int NMEA_SENTENCES_PER_90_SECONDS = 4_096;
     private static final int BASE_STATUS_FRAMES = 180;
     private static final int MAX_NMEA_CHARS = 4_096;
-    private static final int MAX_SATELLITES_PER_FRAME = 256;
+    private static final int MAX_SATELLITES_PER_FRAME = GnssStatusSnapshot.MAX_SATELLITES_PER_FRAME;
     private static final int MAX_GNSS_LIFECYCLE_EVENTS = 64;
 
     private ShellLocationReferenceMain() {}
@@ -282,25 +281,6 @@ public final class ShellLocationReferenceMain {
         return failure.getClass().getName();
     }
 
-    private static Object jsonFloat(float value) {
-        return Float.isFinite(value) ? value : Float.toString(value);
-    }
-
-    private static JSONObject satellite(GnssStatus status, int index) {
-        boolean hasCarrier = Build.VERSION.SDK_INT >= 26 && status.hasCarrierFrequencyHz(index);
-        boolean hasBaseband = Build.VERSION.SDK_INT >= 30 && status.hasBasebandCn0DbHz(index);
-        return json("svid", status.getSvid(index), "constellation_type", status.getConstellationType(index),
-            "cn0_db_hz", jsonFloat(status.getCn0DbHz(index)),
-            "elevation_deg", jsonFloat(status.getElevationDegrees(index)),
-            "azimuth_deg", jsonFloat(status.getAzimuthDegrees(index)),
-            "has_carrier_frequency_hz", hasCarrier,
-            "carrier_frequency_hz", hasCarrier ? jsonFloat(status.getCarrierFrequencyHz(index)) : null,
-            "has_baseband_cn0_db_hz", hasBaseband,
-            "baseband_cn0_db_hz", hasBaseband ? jsonFloat(status.getBasebandCn0DbHz(index)) : null,
-            "used_in_fix", status.usedInFix(index), "has_almanac_data", status.hasAlmanacData(index),
-            "has_ephemeris_data", status.hasEphemerisData(index));
-    }
-
     /** Counters are owned by the synchronized report, including events excluded from the raw archive. */
     private static final class CaptureCount {
         final int limit;
@@ -446,9 +426,7 @@ public final class ShellLocationReferenceMain {
                     statusFrames.oversized++;
                     return;
                 }
-                JSONArray satellites = new JSONArray();
-                for (int i = 0; i < count; i++) satellites.put(satellite(status, i));
-                emit("gnss_status", received, json("satellite_count", count, "satellites", satellites));
+                emit("gnss_status", received, GnssStatusSnapshot.snapshot(status, count));
                 statusFrames.written++;
             } catch (RuntimeException failure) {
                 error("gnss_status", failure, received);

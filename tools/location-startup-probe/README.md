@@ -35,6 +35,14 @@ adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.cod
 
 1.6.3（versionCode 10）可以在重开记录命令后加 `--ez include_nmea false`。仅当次受控会话跳过 NMEA 订阅，JSONL 记录 `nmea_registration` 的 `disabled_by_test` 与 `sdk_attempted=false`。省略参数、显式 `true`、应用自动启动及界面按钮仍按原方式采集。该参数必须用广播的布尔类型传入。
 
+1.7.0（versionCode 11）可以在前台的当次受控会话同时记录普通定位、NMEA 和逐星状态。保持应用可见且窗口有焦点，使用已授予的精确定位权限。
+
+```sh
+adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.codex.locationstartup --ez include_gnss_status true
+```
+
+省略 `include_gnss_status`、传入布尔 `false`、应用自动启动或使用界面按钮时，逐星状态采集关闭。报告分别记录逐星回调的注册与注销结果、逐星帧和 started、stopped、first_fix 生命周期回调。first_fix 保留 SDK 的 `ttff_ms`。API 36 使用回调进入记录线程时的 elapsed 和 wall 时间，无法把逐星帧与某次定位确定为同一个 fix。停止记录会注销已尝试登记的回调。最多保存 60 个逐星帧，每帧最多 256 条，另最多保存 64 条生命周期回调。超过上限的完整帧不写入，丢弃数留在 `session_end.gnss_status_capture`。只有注销记录时，结论限于 SDK 调用结果。未收到帧、空帧或达到上限时，相应数据的覆盖有限。标准 `Location.extras.satellites` 仍保留 SDK 原始数值及类型。
+
 第一条成功时返回策略快照文件名，第二条返回 `restart_requested`。该结果只确认已请求重录，实际登记与回调以新会话和系统定位服务记录为准。策略快照不调用 AppOps note 或修改权限、定位开关与 Thanox 设置。
 
 ### 高程模型参考

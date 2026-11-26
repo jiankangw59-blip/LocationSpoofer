@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.location.GnssStatus;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -45,6 +46,8 @@ final class StartupRecorder {
     private static final int BURST_SLOTS = 40;
     private static final int MAX_EVENTS = 4096;
     private static final int CLEANUP_RESERVE = 10;
+    private static final int GNSS_FRAME_LIMIT = 60;
+    private static final int GNSS_LIFECYCLE_LIMIT = 64;
     private static final int MAX_REPORTS = 20;
     private static final long MAX_CLIPBOARD_BYTES = 300_000;
     private static final String[] PROVIDERS = {LocationManager.GPS_PROVIDER,
@@ -104,10 +107,10 @@ final class StartupRecorder {
     void unobserve(Runnable observer) { if (this.observer == observer) this.observer = null; }
 
     void begin(String trigger, long owner, Stamp origin) {
-        begin(trigger, owner, origin, true);
+        begin(trigger, owner, origin, true, false);
     }
 
-    void begin(String trigger, long owner, Stamp origin, boolean includeNmea) {
+    void begin(String trigger, long owner, Stamp origin, boolean includeNmea, boolean includeGnssStatus) {
         if (!hasPermission()) return;
         if (owner != 0) declaredOwner = owner;
         Session active = current;
@@ -115,7 +118,7 @@ final class StartupRecorder {
         enqueue(true, handler -> {
             Session previous = current;
             if (previous != null && previous.running) finish(previous, "manual_restart", origin);
-            startOnWorker(new Session(handler, trigger, owner, origin, includeNmea), null);
+            startOnWorker(new Session(handler, trigger, owner, origin, includeNmea, includeGnssStatus), null);
         });
     }
 
@@ -129,7 +132,7 @@ final class StartupRecorder {
                 finish(session, "duration_elapsed", stamp);
             }
             if (session == null || !session.running) {
-                startOnWorker(new Session(handler, trigger, owner, stamp, true), event);
+                startOnWorker(new Session(handler, trigger, owner, stamp, true, false), event);
                 return;
             }
             if (session.owner != owner) {
@@ -233,13 +236,15 @@ final class StartupRecorder {
         session.running = true;
         session.timeout = () -> onTimeout(session);
         postAt(session, session.timeout, session.deadline);
-        emit(session, "session_start", session.origin, json("trigger", session.trigger, "event_limit", MAX_EVENTS,
+        JSONObject start = json("trigger", session.trigger, "event_limit", MAX_EVENTS,
             "duration_ms", 30000, "deadline_elapsed_realtime_ns", session.deadline, "package", context.getPackageName(),
             "process", Application.getProcessName(), "pid", Process.myPid(), "uid", Process.myUid(),
             "process_start_elapsed_ms", Process.getStartElapsedRealtime(), "attach_entry_elapsed_ns", attachEntry.elapsedNs,
             "attach_entry_wall_ms", attachEntry.wallMs, "attach_context_ready_elapsed_ns", attachReady.elapsedNs,
             "fine_permission", granted(Manifest.permission.ACCESS_FINE_LOCATION),
-            "coarse_permission", granted(Manifest.permission.ACCESS_COARSE_LOCATION)));
+            "coarse_permission", granted(Manifest.permission.ACCESS_COARSE_LOCATION));
+        if (session.includeGnssStatus) set(start, "gnss_status_requested", true);
+        emit(session, "session_start", session.origin, start);
         if (entryEvent != null) emit(session, entryEvent, session.origin, json("focused", null));
         publish(session);
         if (!capturing(session, Stamp.now())) return;
@@ -251,6 +256,7 @@ final class StartupRecorder {
             return;
         }
         registerReceiver(session);
+        if (session.includeGnssStatus) registerGnssStatus(session);
         Set<String> available = providers(session, "startup");
         readCache(session, available, "initial_cache_before_registration", null, -1);
         registerAvailable(session, available, "startup");
@@ -535,14 +541,73 @@ final class StartupRecorder {
         }
     }
 
+    private void registerGnssStatus(Session session) {
+        Stamp begin = Stamp.now();
+        if (!capturing(session, begin)) return;
+        if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            signalSdkResult(session, "gnss_status_registration", null, "permission_missing", null, null);
+            return;
+        }
+        GnssStatus.Callback callback = new GnssStatus.Callback() {
+            @Override public void onStarted() { lifecycle("started", null); }
+            @Override public void onStopped() { lifecycle("stopped", null); }
+            @Override public void onFirstFix(int ttffMillis) { lifecycle("first_fix", ttffMillis); }
+
+            private void lifecycle(String state, Integer ttff) {
+                Stamp received = Stamp.now();
+                if (!capturing(session, received)) return;
+                session.gnssLifecycleReceived++;
+                if (session.gnssLifecycleWritten >= GNSS_LIFECYCLE_LIMIT) {
+                    session.gnssLifecycleTruncated++;
+                    return;
+                }
+                if (emit(session, "gnss_lifecycle", received, json("state", state, "ttff_ms", ttff))) {
+                    session.gnssLifecycleWritten++;
+                }
+            }
+
+            @Override public void onSatelliteStatusChanged(GnssStatus status) {
+                Stamp received = Stamp.now();
+                if (!capturing(session, received)) return;
+                session.gnssFramesReceived++;
+                if (session.gnssFramesWritten >= GNSS_FRAME_LIMIT) {
+                    session.gnssFramesTruncated++;
+                    return;
+                }
+                try {
+                    int count = status.getSatelliteCount();
+                    if (count > GnssStatusSnapshot.MAX_SATELLITES_PER_FRAME) {
+                        session.gnssFramesOversized++;
+                        return;
+                    }
+                    if (emit(session, "gnss_status", received, GnssStatusSnapshot.snapshot(status, count))) {
+                        session.gnssFramesWritten++;
+                    }
+                } catch (RuntimeException error) {
+                    failure(session, "gnss_status_callback", null, error);
+                }
+            }
+        };
+        begin = Stamp.now();
+        if (!capturing(session, begin)) return;
+        session.gnssStatusCallback = callback;
+        try {
+            boolean registered = session.manager.registerGnssStatusCallback(session.handler::post, callback);
+            signalSdkResult(session, "gnss_status_registration", begin,
+                registered ? "registered" : "not_registered", registered, null);
+        } catch (RuntimeException error) {
+            signalSdkResult(session, "gnss_status_registration", begin, "error", null, error);
+        }
+    }
+
     private void registerNmea(Session session) {
         if (!capturing(session, Stamp.now())) return;
         if (!session.includeNmea) {
-            nmeaLifecycle(session, "nmea_registration", null, "disabled_by_test", null, null);
+            signalSdkResult(session, "nmea_registration", null, "disabled_by_test", null, null);
             return;
         }
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-            nmeaLifecycle(session, "nmea_registration", null, "permission_missing", null, null);
+            signalSdkResult(session, "nmea_registration", null, "permission_missing", null, null);
             return;
         }
         OnNmeaMessageListener listener = (sentence, timestamp) -> {
@@ -561,15 +626,15 @@ final class StartupRecorder {
         try {
             boolean registered = session.manager.addNmeaListener(session.handler::post, listener);
             if (registered) session.nmeaListener = listener;
-            nmeaLifecycle(session, "nmea_registration", begin,
+            signalSdkResult(session, "nmea_registration", begin,
                 registered ? "registered" : "not_registered", registered, null);
         } catch (RuntimeException error) {
-            nmeaLifecycle(session, "nmea_registration", begin, "error", null, error);
+            signalSdkResult(session, "nmea_registration", begin, "error", null, error);
         }
     }
 
-    private void nmeaLifecycle(Session session, String event, Stamp begin, String result,
-                               Boolean returned, RuntimeException error) {
+    private void signalSdkResult(Session session, String event, Stamp begin, String result,
+                                 Boolean returned, RuntimeException error) {
         Stamp end = Stamp.now();
         if (error != null) session.errors++;
         JSONObject data = json("result", result, "sdk_attempted", begin != null, "sdk_return", returned,
@@ -635,11 +700,22 @@ final class StartupRecorder {
             Stamp begin = Stamp.now();
             try {
                 session.manager.removeNmeaListener(session.nmeaListener);
-                nmeaLifecycle(session, "nmea_removal", begin, "removed", null, null);
+                signalSdkResult(session, "nmea_removal", begin, "removed", null, null);
             } catch (RuntimeException error) {
-                nmeaLifecycle(session, "nmea_removal", begin, "error", null, error);
+                signalSdkResult(session, "nmea_removal", begin, "error", null, error);
             }
             session.nmeaListener = null;
+        }
+        if (session.gnssStatusCallback != null) {
+            Stamp begin = Stamp.now();
+            try {
+                session.manager.unregisterGnssStatusCallback(session.gnssStatusCallback);
+                signalSdkResult(session, "gnss_status_removal", begin, "removed", null, null);
+            } catch (RuntimeException error) {
+                signalSdkResult(session, "gnss_status_removal", begin, "error", null, error);
+            } finally {
+                session.gnssStatusCallback = null;
+            }
         }
         if (session.receiver != null) {
             try {
@@ -648,7 +724,7 @@ final class StartupRecorder {
             } catch (RuntimeException error) { failure(session, "unregister_location_broadcasts", null, error); }
             session.receiver = null;
         }
-        session.complete = emit(session, "session_end", requested, json("reason", reason, "errors", session.errors,
+        JSONObject end = json("reason", reason, "errors", session.errors,
             "nmea_sentence_count", session.nmeaCount,
             "cached_windows", counts(session.cached), "callback_windows", counts(session.callbacks),
             "current_location_windows", counts(session.currentLocations),
@@ -657,7 +733,14 @@ final class StartupRecorder {
             "first_callback_delay_ns", session.firstCallbackNs < 0 ? null : session.firstCallbackNs,
             "first_focus_elapsed_ns", session.firstFocusNs == 0 ? null : session.firstFocusNs,
             "observed_mode_broadcasts", session.modeBroadcasts, "missed_burst_slots", missedSlots(session),
-            "coverage", coverage(session)));
+            "coverage", coverage(session));
+        if (session.includeGnssStatus) set(end, "gnss_status_capture", json(
+            "frames_received", session.gnssFramesReceived, "frames_written", session.gnssFramesWritten,
+            "frames_oversized", session.gnssFramesOversized, "frames_truncated", session.gnssFramesTruncated,
+            "frame_limit", GNSS_FRAME_LIMIT, "satellites_per_frame", GnssStatusSnapshot.MAX_SATELLITES_PER_FRAME,
+            "lifecycle_received", session.gnssLifecycleReceived, "lifecycle_written", session.gnssLifecycleWritten,
+            "lifecycle_truncated", session.gnssLifecycleTruncated, "lifecycle_limit", GNSS_LIFECYCLE_LIMIT));
+        session.complete = emit(session, "session_end", requested, end);
         if (session.writer != null) {
             try { session.writer.close(); }
             catch (IOException error) { session.fileError = error.getClass().getName(); session.errors++; }
@@ -684,6 +767,13 @@ final class StartupRecorder {
         else if (session.firstFocusNs >= session.origin.elapsedNs + 2000 * MS) value.append("前 2 秒未观察到窗口焦点；");
         int missed = missedSlots(session);
         if (missed > 0) value.append("漏过缓存时点 ").append(missed).append(" 个；");
+        if (session.includeGnssStatus) {
+            if (session.gnssFramesWritten == 0) value.append("未观察到逐星状态帧；");
+            if (session.gnssFramesReceived != session.gnssFramesWritten
+                    || session.gnssLifecycleReceived != session.gnssLifecycleWritten) {
+                value.append("逐星状态记录不完整；");
+            }
+        }
         if ("event_limit_reached".equals(session.reason)) value.append("达到记录上限，采样不完整；");
         if (session.fileError != null) value.append("日志 I/O 失败，采样不完整；");
         if (session.errors > 0) value.append("有异常，详见报告；");
@@ -766,7 +856,8 @@ final class StartupRecorder {
 
     private boolean emit(Session session, String event, Stamp receive, JSONObject data) {
         if (session.writer == null || session.fileError != null) return false;
-        if (session.running && session.count >= MAX_EVENTS - CLEANUP_RESERVE) {
+        int cleanupReserve = CLEANUP_RESERVE + (session.gnssStatusCallback != null ? 1 : 0);
+        if (session.running && session.count >= MAX_EVENTS - cleanupReserve) {
             finish(session, "event_limit_reached", receive);
             return false;
         }
@@ -818,6 +909,7 @@ final class StartupRecorder {
         final Stamp origin;
         final long deadline;
         final boolean includeNmea;
+        final boolean includeGnssStatus;
         final Map<String, LocationListener> listeners = new LinkedHashMap<>();
         final Map<String, CancellationSignal> requests = new LinkedHashMap<>();
         final int[] cached = new int[3];
@@ -833,6 +925,14 @@ final class StartupRecorder {
         LocationManager manager;
         OnNmeaMessageListener nmeaListener;
         int nmeaCount;
+        GnssStatus.Callback gnssStatusCallback;
+        long gnssFramesReceived;
+        int gnssFramesWritten;
+        long gnssFramesOversized;
+        long gnssFramesTruncated;
+        long gnssLifecycleReceived;
+        int gnssLifecycleWritten;
+        long gnssLifecycleTruncated;
         boolean fusedAbsenceReported;
         Runnable timeout;
         Burst entryBurst;
@@ -855,12 +955,14 @@ final class StartupRecorder {
         String reason;
         String fileError;
 
-        Session(Handler handler, String trigger, long owner, Stamp origin, boolean includeNmea) {
+        Session(Handler handler, String trigger, long owner, Stamp origin, boolean includeNmea,
+                boolean includeGnssStatus) {
             this.handler = handler;
             this.trigger = trigger;
             this.owner = owner;
             this.origin = origin;
             this.includeNmea = includeNmea;
+            this.includeGnssStatus = includeGnssStatus;
             this.deadline = origin.elapsedNs + CAPTURE_NS;
         }
     }
