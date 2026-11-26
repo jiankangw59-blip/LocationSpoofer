@@ -101,6 +101,15 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (lookupArguments?.getString("check") == "satellite-count-fixture") {
+            val output = satelliteCountFixture(
+                lookupArguments?.getString("phase"),
+                fixtureRunId,
+                lookupArguments?.getString("expected_payload_sha256")
+            )
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (locationElapsedUncertainty) {
             val output = verifyLocationElapsedUncertainty(lookupArguments?.getString("phase"))
             finish(if (output.getString("result") == "PASS") -1 else 0, output)

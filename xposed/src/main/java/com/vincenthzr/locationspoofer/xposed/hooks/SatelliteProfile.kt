@@ -16,11 +16,17 @@ internal object SatelliteProfile {
     fun usedCount(visible: Int): Int = visible.coerceIn(MIN_COUNT, MAX_COUNT).coerceAtMost(12)
 
     fun apply(extras: Bundle, satelliteCount: Int = DEFAULT_COUNT) {
-        val visible = satelliteCount.coerceIn(MIN_COUNT, MAX_COUNT)
-        extras.putInt("satellites", visible)
-        extras.putInt("satellites_in_view", visible)
-        extras.putInt("satellites_visible", visible)
-        extras.putInt("satellites_used_in_fix", usedCount(visible))
+        writeCounts(satelliteCount) { key, value -> extras.putInt(key, value) }
         extras.remove("mockLocation")
+    }
+
+    internal inline fun writeCounts(satelliteCount: Int, putInt: (String, Int) -> Unit) {
+        val visible = satelliteCount.coerceIn(MIN_COUNT, MAX_COUNT)
+        val used = usedCount(visible)
+        // Android's legacy key counts the satellites used to derive the fix.
+        putInt("satellites", used)
+        putInt("satellites_in_view", visible)
+        putInt("satellites_visible", visible)
+        putInt("satellites_used_in_fix", used)
     }
 }

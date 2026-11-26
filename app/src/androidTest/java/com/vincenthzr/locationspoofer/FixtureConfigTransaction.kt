@@ -125,15 +125,42 @@ internal class FixtureConfigJournal(private val file: AtomicFile, private val st
         return FixtureConfigState(desired, store.readSnapshot(), owner)
     }
 
-    fun prepare(baseline: FixtureConfigState, payload: JSONObject) {
+    private fun readStateForPrepare(): FixtureConfigState {
         check(!cancellation.exists()) { "Fixture run was already cancelled" }
         check(readJournal() == null) { "Previous fixture requires recovery" }
-        val current = read()
+        return read()
+    }
+
+    fun prepare(baseline: FixtureConfigState, payload: JSONObject) {
+        val current = readStateForPrepare()
         check(current.owner == null && baseline.owner == null && current.desired == baseline.desired &&
             snapshotPayload(current.snapshot) == snapshotPayload(baseline.snapshot)) {
             "User configuration changed before fixture publication"
         }
         check(!current.payload().optBoolean("active")) { "Preserve the active user simulation" }
+        publishNew(current, payload)
+    }
+
+    fun prepareSatelliteCount(expectedPayloadSha256: String): FixtureConfigState {
+        val current = readStateForPrepare()
+        val desired = checkNotNull(current.desired) { "Desired configuration is missing" }
+        check(current.owner == null && snapshotPayload(current.snapshot) == desired) {
+            "Current desired and inline remote configuration must match without a fixture owner"
+        }
+        check(fingerprint(desired) == expectedPayloadSha256) { "Current configuration hash changed" }
+        val payload = current.payload()
+        check(payload.optBoolean("active") && !payload.has(RUN_FIELD)) { "An active user configuration is required" }
+        check(payload.optInt("satellite_count", -1) != 24) { "Satellite count is already 24" }
+        publishNew(current, payload.put("satellite_count", 24))
+        return requireCurrent()
+    }
+
+    fun status(): FixtureConfigState {
+        if (readJournal() != null) return requireCurrent()
+        return read().also { check(it.owner == null) { "Fixture owner exists without a recovery journal" } }
+    }
+
+    private fun publishNew(current: FixtureConfigState, payload: JSONObject) {
         val journal = JSONObject().put("run_id", runId)
             .put("original_desired", current.desired ?: JSONObject.NULL)
             .put("original_snapshot", current.snapshot ?: JSONObject.NULL)
@@ -385,6 +412,30 @@ internal fun Instrumentation.verifyFixtureTransaction(): Bundle {
             check(open().restore().getString("result") == "PASS")
             store.restartFromDisk()
             check(store.snapshot == envelope(original))
+        }
+        verify("satellite_count_active_roundtrip") { store, open ->
+            val active = """{"active":true,"satellite_count":10,"other":{"array":[1,false,null]}}"""
+            val snapshot = envelope(active)
+            store.writeDesired(active, null)
+            store.writeSnapshot(snapshot)
+            val fixture = open()
+            check(runCatching { fixture.prepare(fixture.read(), JSONObject(active)) }.exceptionOrNull()?.message ==
+                "Preserve the active user simulation")
+            check(runCatching { fixture.prepareSatelliteCount("0".repeat(64)) }.exceptionOrNull()?.message ==
+                "Current configuration hash changed")
+            check(fixture.read() == FixtureConfigState(active, snapshot))
+            check(fixture.status() == FixtureConfigState(active, snapshot))
+            val hash = MessageDigest.getInstance("SHA-256").digest(active.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 255) }
+            val state = fixture.prepareSatelliteCount(hash)
+            check(state.owner == fixture.runId && open().status() == state)
+            val updated = state.payload()
+            check(updated.remove(RUN_FIELD) == fixture.runId)
+            check(updated.getInt("satellite_count") == 24)
+            updated.put("satellite_count", 10)
+            check(updated.toString() == active)
+            check(open().restore().getString("snapshot_restored_exactly") == "PASS")
+            check(open().status() == FixtureConfigState(active, snapshot))
         }
         runBlocking { verifyReloadObservation() }
         output.putString("preserve_updates_during_reload", "PASS")
