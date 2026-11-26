@@ -1,0 +1,52 @@
+name: Location startup probe
+
+on:
+  push:
+    branches:
+      - codex/location-startup-probe-20261126
+    paths:
+      - 'tools/location-startup-probe/**'
+      - '.github/workflows/location-startup-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Check offline report analyzer
+        run: python3 tools/location-startup-probe/inspect_reports.py --self-test
+
+      - uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v4.0.4
+
+      - name: Install Android SDK requirements
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Build unsigned aligned APK
+        shell: bash
+        env:
+          BUILD_TOOLS_VERSION: '36.0.0'
+          PROBE_UNSIGNED: '1'
+        run: |
+          python3 -u tools/location-startup-probe/build.py | tee "$RUNNER_TEMP/location-startup-probe-build.json"
+          test -s tools/location-startup-probe/build/location-startup-probe-unsigned.apk
+
+      - name: Upload unsigned APK and build metadata
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: location-startup-probe-unsigned
+          path: |
+            tools/location-startup-probe/build/location-startup-probe-unsigned.apk
+            ${{ runner.temp }}/location-startup-probe-build.json
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,207 @@
+package com.codex.locationstartup;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ClipboardManager;
+import android.graphics.Typeface;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.PersistableBundle;
+import android.os.SystemClock;
+import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+public final class MainActivity extends Activity {
+    private static final int LOCATION_PERMISSION_REQUEST = 1;
+    private final long owner = SystemClock.elapsedRealtimeNanos();
+    private final Runnable observer = this::render;
+    private StartupRecorder recorder;
+    private boolean visible;
+    private String notice = "准备阶段。请先授予定位权限，再重新冷启动进行正式记录。";
+    private TextView status;
+    private TextView summary;
+    private TextView reportPath;
+    private TextView noticeView;
+    private Button permissionButton;
+    private Button restartButton;
+    private Button stopButton;
+    private Button copyButton;
+
+    @Override protected void onCreate(Bundle saved) {
+        StartupRecorder.Stamp entered = StartupRecorder.Stamp.now();
+        super.onCreate(saved);
+        recorder = ((StartupApplication) getApplication()).recorder();
+        recorder.mark(owner, "activity_on_create", entered, null, true);
+        if (recorder.hasPermission()) notice = "";
+        createUi();
+        render();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        visible = true;
+        recorder.observe(observer);
+    }
+
+    @Override protected void onResume() {
+        StartupRecorder.Stamp entered = StartupRecorder.Stamp.now();
+        super.onResume();
+        recorder.mark(owner, "activity_resume", entered, null, true);
+    }
+
+    @Override public void onWindowFocusChanged(boolean focused) {
+        StartupRecorder.Stamp entered = StartupRecorder.Stamp.now();
+        super.onWindowFocusChanged(focused);
+        if (recorder != null) recorder.mark(owner, "activity_window_focus", entered, focused, focused);
+    }
+
+    @Override protected void onPause() {
+        recorder.mark(owner, "activity_pause", StartupRecorder.Stamp.now(), null, true);
+        super.onPause();
+    }
+
+    @Override protected void onStop() {
+        visible = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        recorder.unobserve(observer);
+        recorder.stop(owner, "left_foreground", "activity_stop", StartupRecorder.Stamp.now());
+        super.onStop();
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request == LOCATION_PERMISSION_REQUEST) {
+            notice = recorder.hasPermission() ? "定位权限已授予。请结束此应用后重新启动，正式记录冷启动。"
+                : "当前未授予定位权限。准备阶段没有采样。";
+            render();
+        }
+    }
+
+    private void createUi() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(32), dp(20), dp(24));
+        scroll.addView(content);
+        TextView title = addText(content, "定位启动诊断", 27);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        status = addText(content, "", 18);
+        summary = addText(content, "", 15);
+        reportPath = addText(content, "", 13);
+        reportPath.setTextIsSelectable(true);
+        TextView pkg = addText(content, "包名 " + getPackageName() + "\nThanox GPSApp\n" + getPackageName() + " +", 15);
+        pkg.setTypeface(Typeface.MONOSPACE);
+        pkg.setTextIsSelectable(true);
+        permissionButton = addButton(content, "授予定位权限", () -> requestPermissions(new String[]{
+            Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST));
+        restartButton = addButton(content, "重新记录 30 秒", () -> {
+            StartupRecorder.Stamp entry = StartupRecorder.Stamp.now();
+            recorder.begin("manual", owner, entry);
+            recorder.mark(owner, "activity_window_focus", entry, hasWindowFocus(), false);
+            notice = "手动记录，时间窗口从本次点击开始。";
+            render();
+        });
+        stopButton = addButton(content, "停止记录", () -> recorder.stop(owner, "manual_stop", null, StartupRecorder.Stamp.now()));
+        copyButton = addButton(content, "复制当前报告", this::copyReport);
+        noticeView = addText(content, "", 14);
+        addText(content, "未收到定位不代表无泄漏，mock 字段不是判定真实的充分依据。\n报告含定位坐标，请按需分享。最多保留最近 20 份报告。", 14);
+        setContentView(scroll);
+    }
+
+    private TextView addText(LinearLayout parent, String text, int size) {
+        TextView result = new TextView(this);
+        result.setText(text);
+        result.setTextSize(size);
+        result.setPadding(0, dp(7), 0, dp(7));
+        parent.addView(result);
+        return result;
+    }
+
+    private Button addButton(LinearLayout parent, String text, Runnable action) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setOnClickListener(view -> action.run());
+        parent.addView(button);
+        return button;
+    }
+
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    private void render() {
+        if (status == null) return;
+        StartupRecorder.ViewState value = recorder.view();
+        if (visible && value.running()) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        boolean granted = recorder.hasPermission();
+        boolean prepared = value.file() != null || value.reason() != null;
+        if (!prepared) {
+            status.setText(granted ? "等待记录" : "准备阶段");
+            summary.setText(value.coverage());
+        } else {
+            status.setText((value.running() ? "记录中" : "记录结束") + " · " + value.count() + " 条事件");
+            String sdkState = value.locationEnabled() == null ? "未知" : value.locationEnabled() == 1 ? "开启" : "关闭";
+            String firstCallback = value.firstCallbackMs() < 0 ? "未观察到" : value.firstCallbackMs() + " ms";
+            String focus = value.firstFocusDelayMs() < 0 ? "未观察到页面获得焦点"
+                : "首次页面焦点 · 启动锚点后 " + value.firstFocusDelayMs() + " ms\n"
+                    + windows(value.focusWindows()[0], value.focusWindows()[1], value.focusWindows()[2]);
+            summary.setText("定位开关（SDK 读数）" + sdkState + " · 异常 " + value.errors() + "\n\n"
+                + "会话起点（冷启动为 Application attach 入口）\n"
+                + windows(value.cached(), value.callbacks(), value.currentLocations()) + "\n首个普通监听回调 "
+                + firstCallback + "\n\n" + focus + "\n\n" + value.coverage() + "\n\n首条定位\n"
+                + fallback(value.first()) + "\n最新定位\n" + fallback(value.latest()));
+        }
+        reportPath.setText(value.file() == null ? "" : value.file());
+        String details = notice;
+        if (value.fileError() != null) details += "\n报告文件异常 · " + value.fileError();
+        if (value.reason() != null) details += "\n结束原因 " + value.reason();
+        noticeView.setText(details.trim());
+        permissionButton.setEnabled(!granted);
+        restartButton.setEnabled(granted);
+        stopButton.setEnabled(value.running());
+        copyButton.setText(value.complete() ? "复制当前报告" : "复制未结束快照");
+        copyButton.setEnabled(value.file() != null && value.count() > 0);
+    }
+
+    private static String windows(int[] cache, int[] callback, int[] current) {
+        String[] labels = {"0–200 ms", "200 ms–2 s", "2 s 至会话结束"};
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < labels.length; i++) {
+            if (i != 0) text.append('\n');
+            text.append(labels[i]).append(" · 缓存 ").append(cache[i]).append(" · 监听 ")
+                .append(callback[i]).append(" · 单次 ").append(current[i]);
+        }
+        return text.toString();
+    }
+
+    private static String fallback(String value) { return value == null ? "尚未观察到定位" : value; }
+
+    private void copyReport() {
+        recorder.copy(copy -> {
+            if (!visible) return;
+            if (copy.error() != null) {
+                notice = "复制失败 · copy_report · " + copy.error() + "。报告仍保存在应用文件目录。";
+                render();
+                return;
+            }
+            try {
+                ClipData clip = ClipData.newPlainText(copy.label(), copy.data());
+                if (Build.VERSION.SDK_INT >= 33) {
+                    PersistableBundle extras = new PersistableBundle();
+                    extras.putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true);
+                    clip.getDescription().setExtras(extras);
+                }
+                getSystemService(ClipboardManager.class).setPrimaryClip(clip);
+                notice = copy.complete() ? "当前报告已复制。" : "已复制未结束快照。完整报告需等记录结束。";
+            } catch (RuntimeException failure) {
+                notice = "复制失败 · copy_report · " + failure.getClass().getName() + "。报告仍保存在应用文件目录。";
+            }
+            render();
+        });
+    }
+}
