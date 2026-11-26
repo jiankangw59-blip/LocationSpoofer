@@ -17,12 +17,14 @@
 package com.vincenthzr.locationspoofer.xposed.hooks
 
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.VendorRegistry
+import android.os.Build
 import android.os.IBinder
 import android.os.IInterface
 import android.util.Log
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemClassLocator
+import com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions.ColorOs16Vendor
 import com.vincenthzr.locationspoofer.xposed.utils.*
 import io.github.libxposed.api.*
 import org.json.JSONObject
@@ -70,6 +72,8 @@ private var locationDemandChanged: (() -> Unit)? = null
 private var locationDemandTimer: DemandTimer? = null
 private var nativeSignalGate: NativeSignalGate? = null
 private var rawGnssDelivery: RawGnssDelivery? = null
+private val nmeaAltitudeResolverLock = Any()
+@Volatile private var nmeaAltitudeResolver: NmeaAltitudeResolver? = null
 
 private val nativeLocationRegistrationLock = Any()
 private val activeListenerBinders =
@@ -209,7 +213,14 @@ private fun LocationHooker.registerSignalCallback(chain: XposedInterface.Chain, 
             val motion = getCurrentSpoofedMotion("WGS-84")
             if (motion != null) {
                 val now = System.currentTimeMillis()
-                for (line in buildMockNmeaSentences(motion, RouteEngine.realisticAltitude(config), getJitteredAccuracy(), config))
+                val altitude = RouteEngine.realisticAltitude(config)
+                val accuracy = getJitteredAccuracy()
+                val lines = if (usesColorOsNmeaModel()) {
+                    val reference = nmeaAltitudeResolver?.cached(motion.lat, motion.lng, altitude)
+                    if (retiringGeneration || readConfig() !== config) return@runCatching
+                    buildModelNmeaSentences(motion, reference, accuracy, config, now)
+                } else buildMockNmeaSentences(motion, altitude, accuracy, config)
+                for (line in lines)
                     dispatchNmea(callback, now, line)
             }
         } else {
@@ -281,6 +292,7 @@ internal fun clearSystemLocationReloadState() {
     rawGnssDelivery = null
     locationDemandTimer?.close()
     locationDemandTimer = null
+    clearNmeaAltitudeResolver()
     isHeartbeatTimerStarted = false
     activeListenerBinders.clear()
     activeGnssStatusBinders.clear()
@@ -491,14 +503,27 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
 
                 // 3. 推送标准 NMEA-0183 报文流给目标应用 IGnssNmeaListener
                 if (activeGnssNmeaBinders.isNotEmpty()) {
-                    val nmeas = buildMockNmeaSentences(motion, altitude, accuracy, config)
-                    val nowMs = System.currentTimeMillis()
+                    val useModel = usesColorOsNmeaModel()
+                    var nmeas = if (useModel) null else buildMockNmeaSentences(motion, altitude, accuracy, config)
+                    var nowMs = if (useModel) 0L else System.currentTimeMillis()
                     for ((binder, info) in activeGnssNmeaBinders) {
                         if (!info.accepted) continue
                         if (!registeredPackageEnabled(config, info.packageName) || nativeSignalGate?.allows(binder, true) != true) continue
                         if (!binder.isBinderAlive) {
                             activeGnssNmeaBinders.remove(binder, info)
                             continue
+                        }
+                        if (nmeas == null) {
+                            nowMs = System.currentTimeMillis()
+                            val reference = resolveNmeaAltitudeOnWorker(config, motion, altitude)
+                            if (retiringGeneration || readConfig() !== config) return@demandTimer
+                            nmeas = buildModelNmeaSentences(motion, reference, accuracy, config, nowMs)
+                        }
+                        if (useModel) {
+                            // The registration or active configuration can change during the asset read.
+                            if (retiringGeneration || readConfig() !== config) return@demandTimer
+                            if (activeGnssNmeaBinders[binder] !== info || !binder.isBinderAlive ||
+                                nativeSignalGate?.allows(binder, true) != true) continue
                         }
                         val callback = info.listener
                         try {
@@ -524,6 +549,7 @@ private fun LocationHooker.startSystemLocationHeartbeat(classLoader: ClassLoader
         output.setRequired(wanted)
     }
     observeConfigChanges {
+        if (readConfig()?.optBoolean("active", false) != true) clearNmeaAltitudeResolver()
         nativeSignalGate?.refresh()
         reconcileNativeSignals()
     }
@@ -611,6 +637,51 @@ private fun LocationHooker.buildMockNmeaSentences(
     return NmeaEncoder.build(motion.lat, motion.lng, motion.speed, motion.bearing, altitude,
         accuracy, SatelliteProfile.count(config), config.optBoolean("enable_jitter", true), System.currentTimeMillis())
 }
+
+private fun usesColorOsNmeaModel(): Boolean = VendorRegistry.active === ColorOs16Vendor
+
+private fun clearNmeaAltitudeResolver() = synchronized(nmeaAltitudeResolverLock) {
+    nmeaAltitudeResolver = null
+}
+
+private fun LocationHooker.resolveNmeaAltitudeOnWorker(
+    config: JSONObject,
+    motion: SpoofedMotion,
+    ellipsoidMeters: Double
+): NmeaAltitude? {
+    if (Build.VERSION.SDK_INT < 35) return null
+    val resolver = synchronized(nmeaAltitudeResolverLock) {
+        if (retiringGeneration || readConfig() !== config) return null
+        nmeaAltitudeResolver ?: run {
+            lateinit var installed: NmeaAltitudeResolver
+            installed = newAndroidNmeaAltitudeResolver(
+                context = SystemHookUtils::getSystemContext,
+                onWarmResult = { loaded ->
+                    if (!retiringGeneration && nmeaAltitudeResolver === installed &&
+                        readConfig()?.optBoolean("active", false) == true) {
+                        HookStatus.workEventAndRequestSnapshot(
+                            if (loaded) "nmea_altitude_model_loaded" else "nmea_altitude_model_unavailable"
+                        )
+                    }
+                }
+            )
+            nmeaAltitudeResolver = installed
+            installed
+        }
+    }
+    return resolver.resolveOnWorker(config, motion.lat, motion.lng, ellipsoidMeters)
+}
+
+private fun buildModelNmeaSentences(
+    motion: SpoofedMotion,
+    altitude: NmeaAltitude?,
+    accuracy: Float,
+    config: JSONObject,
+    epochMs: Long
+): List<String> = NmeaEncoder.build(
+    motion.lat, motion.lng, motion.speed, motion.bearing, altitude,
+    accuracy, SatelliteProfile.count(config), config.optBoolean("enable_jitter", true), epochMs
+)
 
 /** 向 ILocationListener 代理对象主动反射调用 onLocationChanged */
 private fun dispatchFakeLocationToListener(listener: Any, fakeLoc: Any) {

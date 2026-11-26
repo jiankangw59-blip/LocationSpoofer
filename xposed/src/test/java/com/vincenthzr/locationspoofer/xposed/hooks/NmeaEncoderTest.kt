@@ -50,6 +50,25 @@ class NmeaEncoderTest {
         }
     }
 
+    @Test fun ggaWritesOrthometricHeightAndSeparationWithoutChangingOtherSentences() {
+        val legacy = NmeaEncoder.build(30.0, 113.0, 1.5f, 270f, 0.0, 2.5f, 16, false, epoch)
+        val projected = NmeaEncoder.build(30.0, 113.0, 1.5f, 270f, NmeaAltitude(-0.6862, 0.6862),
+            2.5f, 16, false, epoch)
+        assertEquals(listOf("0.0", "M", "0.0", "M"), fields(legacy[1]).subList(9, 13))
+        assertEquals(listOf("-0.7", "M", "0.7", "M"), fields(projected[1]).subList(9, 13))
+        assertEquals(legacy.filterIndexed { index, _ -> index != 1 },
+            projected.filterIndexed { index, _ -> index != 1 })
+    }
+
+    @Test fun ggaKeepsFieldPositionsWhenAltitudeIsUnknown() {
+        val gga = NmeaEncoder.build(30.0, 113.0, 0f, 0f, null, 2.5f, 16, false, epoch)[1]
+        val values = fields(gga)
+        assertEquals("GNGGA", values[0])
+        assertEquals(15, values.size)
+        assertEquals(listOf("", "M", "", "M", "", ""), values.subList(9, 15))
+        assertEquals(NmeaEncoder.sentence(gga.substringBefore('*')), gga)
+    }
+
     @Test fun coordinateRoundingNeverProducesSixtyMinutes() {
         assertEquals("9000.00000", NmeaEncoder.coordinate(89.9999999999, true).first)
         assertEquals("18000.00000", NmeaEncoder.coordinate(179.9999999999, false).first)

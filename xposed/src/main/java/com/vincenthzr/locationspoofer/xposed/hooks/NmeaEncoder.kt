@@ -23,6 +23,11 @@ internal object NmeaEncoder {
     }
 
     fun build(latitude: Double, longitude: Double, speedMps: Float, bearing: Float, altitude: Double,
+        accuracy: Float, satelliteCount: Int, jitter: Boolean, epochMs: Long): List<String> =
+        build(latitude, longitude, speedMps, bearing, NmeaAltitude(altitude, 0.0), accuracy,
+            satelliteCount, jitter, epochMs)
+
+    fun build(latitude: Double, longitude: Double, speedMps: Float, bearing: Float, altitude: NmeaAltitude?,
         accuracy: Float, satelliteCount: Int, jitter: Boolean, epochMs: Long): List<String> {
         val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = epochMs }
         val time = String.format(Locale.US, "%02d%02d%02d.%02d", utc.get(Calendar.HOUR_OF_DAY),
@@ -36,9 +41,11 @@ internal object NmeaEncoder {
         val vdop = hdop * 1.125
         val pdop = hypot(hdop, vdop)
         fun f(value: Double, places: Int = 1) = String.format(Locale.US, "%.${places}f", value)
+        val msl = altitude?.let { f(it.meanSeaLevelMeters) }.orEmpty()
+        val separation = altitude?.let { f(it.geoidSeparationMeters) }.orEmpty()
         val lines = mutableListOf(
             sentence("GNRMC,$time,A,$lat,$ns,$lon,$ew,${f(speedMps.coerceAtLeast(0f) * 1.943844, 2)},${f(bearing.toDouble())},$date,,,A"),
-            sentence("GNGGA,$time,$lat,$ns,$lon,$ew,1,${sky.count { it.used }},${f(hdop)},${f(altitude)},M,0.0,M,,")
+            sentence("GNGGA,$time,$lat,$ns,$lon,$ew,1,${sky.count { it.used }},${f(hdop)},$msl,M,$separation,M,,")
         )
         for ((talker, satellites) in sky.groupBy { it.talker }) {
             val used = satellites.filter { it.used }.map { String.format(Locale.US, "%02d", it.svid) }
