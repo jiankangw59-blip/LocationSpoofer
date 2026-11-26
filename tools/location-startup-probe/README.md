@@ -64,6 +64,8 @@ adb exec-out env CLASSPATH=/data/local/tmp/location-startup-probe.apk app_proces
 
 默认命令要求真实 UID 2000。作为独立系统 UID 对照时，可在参数末尾显式加 `--identity system`，例如 `--request --duration-ms 90000 --identity system`。调用方必须已为真实 UID 1000，入口核对当前 ROM 的 `android` 包和归属，报告标记为 `independent_system_uid_client`。该样本测试系统 UID 路径，主机需核对进程 PID 与 system_server 不同。UID 0 无法通过任一身份校验。
 
+1.6.1（versionCode 8）从 `PackageManager.getPackageUid` 查询 `package_uid`，并写明 `package_uid_source`。Context 的 `ApplicationInfo.uid` 原值保存在 `context_application_uid`，用于诊断系统 Context 的缓存信息。
+
 JSONL 保存原始 NMEA 句子及 SDK 时间，卫星逐项保存 svid、星座、C/N0、仰角、方位、载频、基带 C/N0 及星历等标志。实际收到的启动、停止、首 fix 时间也会单列。退出时独立取消单次请求、移除 GPS、GNSS 状态和 NMEA 监听。报告保留每次 API 尝试的返回和异常。持续定位最多 90 条，NMEA、卫星状态与生命周期的独立上限和遗漏计数写入终态。
 
 Shell 和前台探针使用同一组原始定位字段。比较时核对同一次启动、GPS provider、样本源时间和精度。空结果和 API 异常保留在 JSONL 中，`reference_end.status` 为 `ok`、`no_fix` 或 `error`。主动 GPS fix、NMEA 和卫星状态分别有 `OBSERVED` 或 `UNOBSERVED`。缓存 GPS 结果单列。卫星数为 0 的状态帧也保留。到期后收到的定位或启动／停止事件带有 `after_deadline` 标记，不计入窗口覆盖。`ok` 只表示读取到了坐标，来源仍需通过独立证据确认。缺失终态表示采样未完整结束。参考文件含真实位置候选，只在本地处理，勿上传。

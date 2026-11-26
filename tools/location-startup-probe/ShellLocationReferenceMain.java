@@ -134,13 +134,16 @@ public final class ShellLocationReferenceMain {
         Object thread = activityThread.getMethod("systemMain").invoke(null);
         Context system = (Context) activityThread.getMethod("getSystemContext").invoke(thread);
         Context context = identity == Identity.SYSTEM ? system : system.createPackageContext(identity.packageName, 0);
-        String[] packages = context.getPackageManager().getPackagesForUid(identity.uid);
-        int packageUid = context.getApplicationInfo().uid;
+        PackageManager packageManager = context.getPackageManager();
+        String[] packages = packageManager.getPackagesForUid(identity.uid);
+        int packageUid = packageManager.getPackageUid(identity.packageName, 0);
+        int contextApplicationUid = context.getApplicationInfo().uid;
         AttributionSource attribution = context.getAttributionSource();
         boolean uidOwnsPackage = packages != null && Arrays.asList(packages).contains(identity.packageName);
         report.emit("reference_identity", Stamp.now(), json("identity", identity.label, "identity_scope", identity.scope,
             "uid", Process.myUid(), "pid", Process.myPid(), "package_name", context.getPackageName(),
-            "package_uid", packageUid, "uid_owns_package", uidOwnsPackage,
+            "package_uid", packageUid, "package_uid_source", "package_manager_get_package_uid",
+            "context_application_uid", contextApplicationUid, "uid_owns_package", uidOwnsPackage,
             "op_package_name", context.getOpPackageName(),
             "attribution_package_name", attribution.getPackageName(), "attribution_uid", attribution.getUid(),
             "fine_permission", context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION),
