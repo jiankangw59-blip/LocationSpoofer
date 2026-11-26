@@ -55,6 +55,7 @@ internal class ColorOs16LocationDelivery(
         if (enabled && !module.retiringGeneration) guarded("demand reconciliation") { reconcileDemand() }
     }
     private lateinit var registrationClass: Class<*>
+    private lateinit var continuousRegistrationClass: Class<*>
     private lateinit var getIdentity: Method
     private lateinit var getUid: Method
     private lateinit var getPackageName: Method
@@ -78,6 +79,7 @@ internal class ColorOs16LocationDelivery(
             val managerName = manager.name
             registrationClass = Class.forName("$managerName\$Registration", false, loader)
             val continuous = Class.forName("$managerName\$LocationRegistration", false, loader)
+            continuousRegistrationClass = continuous
             val current = Class.forName("$managerName\$GetCurrentLocationListenerRegistration", false, loader)
             val baseRegistration = Class.forName("com.android.server.location.listeners.ListenerRegistration", false, loader)
             val identity = Class.forName("android.location.util.identity.CallerIdentity", false, loader)
@@ -272,11 +274,8 @@ internal class ColorOs16LocationDelivery(
             for (owner in snapshot) guarded("active demand") {
                 // Copy only immutable identity/state under the native lock. In particular,
                 // target checks can use PackageManager/Binder and must happen after release.
-                val registrations = synchronized(multiplexerLockField.get(owner)) {
-                    val registrations = registrationsField.get(owner) as Map<*, *>
-                    registrations.values.filterNotNull().map { registration ->
-                        Pair(getIdentity.invoke(registration), registrationIsActive.invoke(registration) == true)
-                    }
+                val registrations = registrationSnapshot(owner) { registration ->
+                    Pair(getIdentity.invoke(registration), registrationIsActive.invoke(registration) == true)
                 }
                 for ((identity, active) in registrations) {
                         if (!isTarget(owner, identity, config)) continue
@@ -291,6 +290,33 @@ internal class ColorOs16LocationDelivery(
         }
         output?.setRequired(enabled && !module.retiringGeneration && wanted)
     }
+
+    fun registeredTargetUids(userId: Int): Set<Int> {
+        if (!enabled || module.retiringGeneration) return emptySet()
+        val config = module.readConfig() ?: return emptySet()
+        if (!config.optBoolean("active", false)) return emptySet()
+        val getUserId = getIdentity.returnType.getMethod("getUserId")
+        val snapshot = synchronized(managers) { managers.toList() }
+        return buildSet {
+            for (owner in snapshot) {
+                val identities = registrationSnapshot(owner) { registration ->
+                    if (continuousRegistrationClass.isInstance(registration)) getIdentity.invoke(registration)
+                    else null
+                }
+                for (identity in identities) {
+                    if (getUserId.invoke(identity) == userId && isTarget(owner, identity, config)) {
+                        add(getUid.invoke(identity) as Int)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun <T : Any> registrationSnapshot(owner: Any, read: (Any) -> T?): List<T> =
+        synchronized(multiplexerLockField.get(owner)) {
+            val registrations = registrationsField.get(owner) as Map<*, *>
+            registrations.values.filterNotNull().mapNotNull(read)
+        }
 
     private fun tick() {
         val config = module.readConfig() ?: return

@@ -146,6 +146,51 @@ class LocationPermissionEventForwarderTest {
     }
 
     @Test
+    fun locationModeEventRechecksTheRegisteredTargetAfterTheNativeUpdate() {
+        val fixture = Fixture()
+        val uid = 10527
+        val targetUids: (Int) -> Set<Int> = { if (it == 0) setOf(uid) else emptySet() }
+        val nativeNotify: (Int) -> Unit = {
+            assertEquals(uid, it)
+            fixture.native.refreshPermission()
+        }
+
+        fixture.native.permissionAllowed = true
+        fixture.forwarder.onLocationModeChanged(10, targetUids, nativeNotify)
+        fixture.forwarder.onLocationModeChanged(0, targetUids, nativeNotify)
+        assertFalse(fixture.native.active)
+        fixture.drain()
+        fixture.native.deliver()
+        assertTrue(fixture.native.active)
+        assertEquals(2, fixture.native.permissionChecks)
+        assertEquals(1, fixture.native.callbacks)
+        assertEquals(0, fixture.received)
+
+        fixture.native.permissionAllowed = false
+        fixture.forwarder.onLocationModeChanged(0, targetUids, nativeNotify)
+        fixture.drain()
+        fixture.native.deliver()
+        assertFalse(fixture.native.active)
+        assertEquals(3, fixture.native.permissionChecks)
+        assertEquals(1, fixture.native.callbacks)
+    }
+
+    @Test
+    fun locationModeEventAdmitsEachUidBeforeInvokingNativeNotification() {
+        val fixture = Fixture()
+        val nativeCalls = mutableListOf<Int>()
+        fixture.forwarder.onLocationModeChanged(0, { linkedSetOf(10527, 10528) }) { uid ->
+            nativeCalls.add(uid)
+            fixture.forwarder.close()
+        }
+
+        fixture.drain()
+        assertEquals(listOf(10527), nativeCalls)
+        assertEquals(1, fixture.skippedClosed)
+        assertEquals(0, fixture.failures)
+    }
+
+    @Test
     fun enqueueAndNativeErrorsAreCountedWithoutPropagation() {
         val fixture = Fixture()
         fixture.acceptPost = false

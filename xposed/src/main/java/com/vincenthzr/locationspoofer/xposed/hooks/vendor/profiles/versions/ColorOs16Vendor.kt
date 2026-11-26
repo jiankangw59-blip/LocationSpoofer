@@ -40,7 +40,7 @@ object ColorOs16Vendor : SystemVersionVendor(ColorOsVendor) {
             val delivery = ColorOs16LocationDelivery(hooker, classLoader)
             hooker.vendorExtraHooks.add(delivery)
             delivery.install()
-            val permissionEvents = ColorOs16LocationPermissionEvents(hooker, classLoader)
+            val permissionEvents = ColorOs16LocationPermissionEvents(hooker, classLoader, delivery::registeredTargetUids)
             hooker.vendorExtraHooks.add(permissionEvents)
             permissionEvents.install()
         }

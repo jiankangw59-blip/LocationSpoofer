@@ -14,9 +14,11 @@ import io.github.libxposed.api.XposedInterface
 /** Forward settled package events dropped by the inspected ColorOS location watcher. */
 internal class ColorOs16LocationPermissionEvents(
     private val module: LocationHooker,
-    private val loader: ClassLoader
+    private val loader: ClassLoader,
+    private val registeredTargetUids: (Int) -> Set<Int>
 ) : AutoCloseable {
     private var handle: XposedInterface.HookHandle? = null
+    private var modeHandle: XposedInterface.HookHandle? = null
     private var forwarder: LocationPermissionEventForwarder<Any>? = null
 
     fun install() {
@@ -68,9 +70,43 @@ internal class ColorOs16LocationPermissionEvents(
                 events.onChanged(op, pkg) { ownerField.get(chain.thisObject) }
                 original
             }
+            installModeCallback(events)
         } catch (error: Throwable) {
             close()
             HookStatus.error("ColorOS16 location permission callback", error)
+        }
+    }
+
+    private fun installModeCallback(events: LocationPermissionEventForwarder<Any>) {
+        try {
+            val service = Class.forName("com.android.server.location.LocationManagerService", false, loader)
+            val callback = service.getDeclaredMethod("onLocationModeChanged", Integer.TYPE)
+            check(callback.returnType == Void.TYPE)
+            val injectorField = service.getDeclaredField("mInjector").apply { isAccessible = true }
+            val getPermissions = injectorField.type.getMethod("getLocationPermissionsHelper")
+                .apply { isAccessible = true }
+            val notify = getPermissions.returnType.getDeclaredMethod("notifyLocationPermissionsChanged", Integer.TYPE)
+                .apply { isAccessible = true }
+            check(notify.returnType == Void.TYPE)
+            // Both callers can inline the private callback before a hot reload installs this hook.
+            val bridge = service.getDeclaredMethod("\$r8\$lambda\$6c2pN5bSGWwMbCJXYQGSIqoMNSk", service, Integer.TYPE)
+            val listener = Class.forName("com.android.server.location.LocationManagerService\$\$ExternalSyntheticLambda6", false, loader)
+                .getDeclaredMethod("onSettingChanged", Integer.TYPE)
+            module.deoptimize(bridge)
+            module.deoptimize(listener)
+            modeHandle = module.hook(callback).intercept { chain ->
+                val original = chain.proceed()
+                val owner = chain.thisObject
+                val userId = chain.args[0] as Int
+                events.onLocationModeChanged(userId, registeredTargetUids) { uid ->
+                    val helper = getPermissions.invoke(injectorField.get(owner))
+                    notify.invoke(helper, uid)
+                    HookStatus.workEventAndRequestSnapshot("coloros_location_permission_mode_forwarded")
+                }
+                original
+            }
+        } catch (error: Throwable) {
+            HookStatus.error("ColorOS16 location mode permission callback", error)
         }
     }
 
@@ -83,6 +119,10 @@ internal class ColorOs16LocationPermissionEvents(
     override fun close() {
         forwarder?.close()
         forwarder = null
+        val oldModeHandle = modeHandle
+        modeHandle = null
+        if (oldModeHandle != null) runCatching { oldModeHandle.unhook() }
+            .onFailure { HookStatus.error("ColorOS16 location mode permission unhook", it) }
         val oldHandle = handle
         handle = null
         if (oldHandle != null) runCatching { oldHandle.unhook() }
@@ -112,30 +152,50 @@ internal class LocationPermissionEventForwarder<T : Any>(
 
     fun onChanged(op: String?, pkg: String?, owner: () -> T?) {
         if (pkg.isNullOrEmpty() || !isLocationAppOp(op)) return
+        enqueue {
+            val helper = checkNotNull(owner())
+            onReceived()
+            return@enqueue {
+                if (target(helper, pkg) && admit()) {
+                    notifyNative(helper, pkg)
+                    onForwarded()
+                }
+            }
+        }
+    }
+
+    fun onLocationModeChanged(userId: Int, targetUids: (Int) -> Set<Int>, notify: (Int) -> Unit) {
+        if (userId < 0) return
+        enqueue {
+            refresh@{
+                for (uid in targetUids(userId)) {
+                    if (!admit()) return@refresh
+                    notify(uid)
+                }
+            }
+        }
+    }
+
+    private fun enqueue(prepare: () -> (() -> Unit)) {
         try {
             synchronized(queueLock) {
                 if (isClosed() || !active()) return
-                val helper = checkNotNull(owner())
-                onReceived()
-                if (!post(Runnable { refresh(helper, pkg) })) onFailure()
+                val refresh = prepare()
+                if (!post(Runnable {
+                        try {
+                            if (!isClosed() && active()) refresh()
+                        } catch (_: Throwable) {
+                            onFailure()
+                        }
+                    })) onFailure()
             }
         } catch (_: Throwable) {
             onFailure()
         }
     }
 
-    private fun refresh(owner: T, pkg: String) {
-        try {
-            if (isClosed() || !active() || !target(owner, pkg)) return
-            // Final admission shares the close lock. Admitted work may finish after close.
-            val admitted = synchronized(queueLock) { !isClosed() && active() }
-            if (!admitted) return
-            notifyNative(owner, pkg)
-            onForwarded()
-        } catch (_: Throwable) {
-            onFailure()
-        }
-    }
+    // Final admission shares the close lock. Admitted work may finish after close.
+    private fun admit(): Boolean = synchronized(queueLock) { !isClosed() && active() }
 
     private fun isClosed(): Boolean {
         val alreadyClosed = closed
