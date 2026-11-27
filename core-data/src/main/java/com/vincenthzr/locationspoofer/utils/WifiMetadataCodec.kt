@@ -1,11 +1,14 @@
 package com.vincenthzr.locationspoofer.utils
 
+import com.vincenthzr.locationspoofer.data.model.MAX_REPORTED_WIFI_CHANNEL
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadata
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiSnapshot
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng
 import org.json.JSONObject
 import java.time.Instant
 import java.util.Locale
+
+internal const val WIFI_METADATA_MAX_POSITION_DELTA_METERS = 500.0
 
 /** Exact BSSID join using WiGLE's WiFiNetwork schema. Channel without a band never implies a frequency. */
 internal object WifiMetadataCodec {
@@ -32,11 +35,12 @@ internal object WifiMetadataCodec {
             val lng = item.optDouble("trilong", Double.NaN)
             if (lat !in -90.0..90.0 || lng !in -180.0..180.0) continue
             // A moved AP or inconsistent source should not overwrite the target area's metadata.
-            if (GeoMath.distance(LatLng(point.latitude, point.longitude), LatLng(lat, lng)) > 500.0) continue
+            if (GeoMath.distance(LatLng(point.latitude, point.longitude), LatLng(lat, lng)) >
+                WIFI_METADATA_MAX_POSITION_DELTA_METERS) continue
             val ssid = item.takeIf { it.has("ssid") && !it.isNull("ssid") }?.optString("ssid")
                 ?.takeIf { it.toByteArray(Charsets.UTF_8).size <= 32 }
             var frequency = item.optInt("frequency", 0).takeIf { frequencyToChannel(it) != null }
-            var channel = item.optInt("channel", 0).takeIf { it in 1..233 }
+            var channel = item.optInt("channel", 0).takeIf { it in 1..MAX_REPORTED_WIFI_CHANNEL }
             if (frequency != null && channel != null && frequencyToChannel(frequency) != channel) {
                 frequency = null; channel = null
             } else if (frequency != null && channel == null) channel = frequencyToChannel(frequency)

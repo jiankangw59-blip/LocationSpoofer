@@ -12,13 +12,13 @@
     <string name="remote_wifi_global">Global</string>
     <string name="remote_wifi_query">Query and cache</string>
     <string name="remote_wifi_loading">Loading…</string>
-    <string name="remote_wifi_result_count">Apple Tile · %1$d records</string>
+    <string name="remote_wifi_result_count">%1$d Wi-Fi records</string>
     <string name="remote_wifi_cached">Cached result · queried %1$s</string>
     <string name="remote_wifi_saved">Saved result · queried %1$s</string>
     <string name="remote_wifi_result_center">Query coordinates (WGS-84) %1$.7f, %2$.7f</string>
     <string name="remote_wifi_point_coordinates">WGS-84 %1$.7f, %2$.7f</string>
     <string name="remote_wifi_point_distance">Distance %1$.0f m</string>
-    <string name="remote_wifi_missing_fields">Apple provides BSSID and recorded coordinates. Names, frequency and channel use matching WiGLE or existing observations only. Signal is estimated from distance. Missing fields remain unknown; query time does not imply the device is online.</string>
+    <string name="remote_wifi_missing_fields">Apple provides BSSID and recorded coordinates. Some WLOC records also show a channel number in this preview. Names and frequencies use matching WiGLE or existing observations. Signal is estimated from distance. Missing fields remain unknown. The query time does not confirm that an access point is online.</string>
     <string name="remote_wifi_error_coordinates">Enter finite coordinates with latitude between −85.05112878 and 85.05112878 and longitude between −180 and 180.</string>
     <string name="remote_wifi_error_no_coverage">This bounded lookup found no usable Apple positions within 300 m. This does not establish that the area has no access points.</string>
     <string name="remote_wifi_error_limit">The lookup reached its resource budget. Results are incomplete. Retry later; distant access points will not be adopted.</string>
@@ -56,6 +56,7 @@
     <string name="remote_wifi_empty_ssid">SSID (WiGLE) empty</string>
     <string name="remote_wifi_frequency">%1$d MHz · channel %2$d</string>
     <string name="remote_wifi_channel_unknown_band">Channel %1$d · band unknown</string>
+    <string name="remote_wifi_apple_wloc_channel">Apple WLOC · channel %1$d · band unknown</string>
     <string name="remote_wifi_encryption">WiGLE encryption label %1$s</string>
     <string name="remote_wifi_metadata_time">WiGLE queried at %1$s</string>
     <string name="remote_wifi_status_near">Last query: nearby Wi-Fi records verified; query cells separately.</string>

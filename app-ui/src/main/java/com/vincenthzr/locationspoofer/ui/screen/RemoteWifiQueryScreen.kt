@@ -295,7 +295,13 @@ fun RemoteWifiQueryScreen(
                             Text(point.bssid, style = MaterialTheme.typography.titleSmall)
                             Text(stringResource(R.string.remote_wifi_point_coordinates, point.latitude, point.longitude))
                             Text(stringResource(R.string.remote_wifi_point_distance, point.distanceMeters))
-                            point.metadata?.let { metadata ->
+                            val wifiMetadata = point.metadata
+                            if (wifiMetadata?.channel == null && wifiMetadata?.frequencyMHz == null) {
+                                point.reportedChannel?.let {
+                                    Text(stringResource(R.string.remote_wifi_apple_wloc_channel, it))
+                                }
+                            }
+                            wifiMetadata?.let { metadata ->
                                 metadata.ssid?.let { ssid ->
                                     Text(if (ssid.isEmpty()) stringResource(R.string.remote_wifi_empty_ssid)
                                         else stringResource(R.string.remote_wifi_ssid, ssid))

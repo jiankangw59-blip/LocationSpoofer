@@ -1,6 +1,7 @@
 package com.vincenthzr.locationspoofer.data.repository
 
 import android.util.AtomicFile
+import com.vincenthzr.locationspoofer.data.model.MAX_REPORTED_WIFI_CHANNEL
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiPoint
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiSnapshot
@@ -143,14 +144,15 @@ class RemoteWifiRepository(
                 val frequency = value.optInt("frequency_mhz", 0).takeIf { value.has("frequency_mhz") }
                 require(frequency == null || WifiMetadataCodec.frequencyToChannel(frequency) != null)
                 val channel = value.optInt("channel", 0).takeIf { value.has("channel") }
-                require(channel == null || channel in 1..233)
+                require(channel == null || channel in 1..MAX_REPORTED_WIFI_CHANNEL)
                 require(frequency == null || channel == null || WifiMetadataCodec.frequencyToChannel(frequency) == channel)
                 val encryption = value.optString("encryption").takeIf { value.has("encryption") }
                 require(encryption == null || encryption.length <= 64)
                 RemoteWifiMetadata(ssid, frequency, channel, encryption, value.getLong("fetched_at").also { require(it > 0) },
                     value.optLong("observed_at", 0).takeIf { it > 0 })
             } else null
-            RemoteWifiPoint(bssid, lat, lng, distance, metadata)
+            val appleWlocChannel = (entry.opt("apple_wloc_channel") as? Int)?.takeIf { it in 1..MAX_REPORTED_WIFI_CHANNEL }
+            RemoteWifiPoint(bssid, lat, lng, distance, metadata, appleWlocChannel)
         }
         val adopted = discovery?.let { lookup -> points.filter { it.distanceMeters <= lookup.adoptionRadiusMeters } } ?: points
         if (adopted.isEmpty()) return null
@@ -168,6 +170,7 @@ class RemoteWifiRepository(
                 put("latitude", point.latitude)
                 put("longitude", point.longitude)
                 put("distance_meters", point.distanceMeters)
+                putOpt("apple_wloc_channel", point.appleWlocChannel)
                 point.metadata?.let { metadata ->
                     put("metadata", JSONObject().apply {
                         put("source", "WiGLE")

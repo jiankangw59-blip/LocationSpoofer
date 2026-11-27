@@ -113,7 +113,9 @@ class AppleWifiDiscovery(
                 if (point.latitude !in -90.0..90.0 || point.longitude !in -180.0..180.0) continue
                 // Never trust a stored/provider-supplied distance or move a seed to the target.
                 val distance = GeoMath.distance(LatLng(latitude, longitude), LatLng(point.latitude, point.longitude))
-                if (distance <= policy.seedRadiusMeters) points[address] = point.copy(bssid = address, distanceMeters = distance)
+                if (distance <= policy.seedRadiusMeters) points[address] = point.copy(
+                    bssid = address, distanceMeters = distance
+                ).withMissingAppleChannelFrom(points[address])
             }
             if (points.size > 1000) {
                 val nearest = points.values.sortedBy { it.distanceMeters }.take(1000)

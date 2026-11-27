@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.utils
 
+import com.vincenthzr.locationspoofer.data.model.MAX_REPORTED_WIFI_CHANNEL
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiPoint
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng
@@ -25,7 +26,15 @@ internal object WifiBssid {
     }
 }
 
-/** Apple's recorded AP positions, not a live scan, a freshness guarantee, or observed signal strength. */
+internal fun RemoteWifiPoint.withMissingAppleChannelFrom(other: RemoteWifiPoint?): RemoteWifiPoint {
+    val channel = other?.appleWlocChannel ?: return this
+    if (appleWlocChannel != null) return this
+    // Callers provide the same canonical BSSID from this lookup.
+    val delta = GeoMath.distance(LatLng(latitude, longitude), LatLng(other.latitude, other.longitude))
+    return if (delta <= WIFI_METADATA_MAX_POSITION_DELTA_METERS) copy(appleWlocChannel = channel) else this
+}
+
+/** Apple's reported AP positions and channels. The response provides neither freshness nor observed RSSI. */
 internal object AppleWifiWlocCodec {
     private class Writer {
         private val output = ByteArrayOutputStream()
@@ -58,16 +67,17 @@ internal object AppleWifiWlocCodec {
     fun decode(bytes: ByteArray, latitude: Double, longitude: Double, radiusMeters: Double): List<RemoteWifiPoint> {
         require(bytes.size in 10..2_097_152 && radiusMeters.isFinite() && radiusMeters in 0.0..50_000.0)
         require(latitude.isFinite() && longitude.isFinite() && latitude in -90.0..90.0 && longitude in -180.0..180.0)
-        val result = mutableListOf<RemoteWifiPoint>()
+        val result = LinkedHashMap<String, RemoteWifiPoint>()
         val response = Reader(bytes.copyOfRange(10, bytes.size))
         while (response.more()) {
             val tag = response.number().toInt()
             if (tag != 18) { response.skip(tag and 7); continue }
             val device = Reader(response.bytes())
             var bssid: String? = null; var lat: Double? = null; var lon: Double? = null
-            while (device.more()) when (val field = device.number().toInt()) {
-                10 -> bssid = WifiBssid.normalize(device.bytes().toString(Charsets.UTF_8))
-                18 -> {
+            var channel: Int? = null
+            while (device.more()) when (val field = device.number()) {
+                10L -> bssid = WifiBssid.normalize(device.bytes().toString(Charsets.UTF_8))
+                18L -> {
                     val position = Reader(device.bytes())
                     while (position.more()) when (val coord = position.number().toInt()) {
                         8 -> lat = position.number() * 1e-8
@@ -75,14 +85,20 @@ internal object AppleWifiWlocCodec {
                         else -> position.skip(coord and 7)
                     }
                 }
-                else -> device.skip(field and 7)
+                // ALSWirelessAP.channel, field 21 with wire type 0.
+                168L -> channel = device.number()
+                    .takeIf { it in 1L..MAX_REPORTED_WIFI_CHANNEL.toLong() }?.toInt() ?: channel
+                else -> device.skip((field and 7).toInt())
             }
             val address = bssid ?: continue; val a = lat ?: continue; val b = lon ?: continue
             if (a !in -90.0..90.0 || b !in -180.0..180.0) continue
             val distance = GeoMath.distance(LatLng(latitude, longitude), LatLng(a, b))
-            if (distance <= radiusMeters) result += RemoteWifiPoint(address, a, b, distance)
+            if (!(distance <= radiusMeters)) continue
+            val point = RemoteWifiPoint(address, a, b, distance, appleWlocChannel = channel)
+            val first = result[address]
+            result[address] = first?.withMissingAppleChannelFrom(point) ?: point
         }
-        return result.distinctBy { it.bssid }.sortedBy { it.distanceMeters }.take(1000)
+        return result.values.sortedBy { it.distanceMeters }.take(1000)
     }
 
     private class Reader(private val input: ByteArray) {

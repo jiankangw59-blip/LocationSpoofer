@@ -28,9 +28,11 @@ private fun varint(value: Long): ByteArray {
     return output.toByteArray()
 }
 private fun message(field: Int, bytes: ByteArray) = varint((field * 8 + 2).toLong()) + varint(bytes.size.toLong()) + bytes
-private fun wifiWire(bssid: String, lat: Double, lon: Double): ByteArray = message(2,
+private fun wifiWire(bssid: String, lat: Double, lon: Double, fields: ByteArray = byteArrayOf()): ByteArray = message(2,
     message(1, bssid.toByteArray()) + message(2,
-        byteArrayOf(8) + varint((lat * 1e8).toLong()) + byteArrayOf(16) + varint((lon * 1e8).toLong())))
+        byteArrayOf(8) + varint((lat * 1e8).toLong()) + byteArrayOf(16) + varint((lon * 1e8).toLong())) + fields)
+
+private fun channelWire(channel: Long): ByteArray = varint(21L * 8) + varint(channel)
 
 class AppleWifiWlocCodecTest {
     @Test fun canonicalizesUnpaddedUppercaseCompactAndHyphenatedAddresses() {
@@ -55,6 +57,39 @@ class AppleWifiWlocCodecTest {
         val decoded = AppleWifiWlocCodec.decode(ByteArray(10) + record + record, -33.86, 151.20, 12_000.0)
         assertEquals(1, decoded.size); assertEquals("0a:0b:0c:0d:0e:0f", decoded[0].bssid)
         assertEquals(-33.86, decoded[0].latitude, 1e-7); assertEquals(0.0, decoded[0].distanceMeters, 0.01)
+    }
+
+    @Test fun retainsAReportedChannelAcrossDuplicateBssidsWithoutInferringFrequency() {
+        val first = wifiWire("2:0:0:0:0:1", TEST_LAT, TEST_LON)
+        val duplicate = wifiWire(mac(1), TEST_LAT + 0.0001, TEST_LON, channelWire(11))
+        val conflicting = wifiWire(mac(1), TEST_LAT + 0.0002, TEST_LON, channelWire(6))
+        val result = AppleWifiWlocCodec.decode(
+            ByteArray(10) + first + duplicate + conflicting, TEST_LAT, TEST_LON, 300.0
+        ).single()
+        assertEquals(mac(1), result.bssid)
+        assertEquals(TEST_LAT, result.latitude, 1e-7)
+        assertEquals(11, result.appleWlocChannel)
+        assertEquals(11, result.reportedChannel)
+        assertNull(result.metadata)
+    }
+
+    @Test fun doesNotBorrowAChannelFromAnInconsistentDuplicatePosition() {
+        val first = wifiWire(mac(1), TEST_LAT, TEST_LON)
+        val duplicate = wifiWire(mac(1), TEST_LAT + 0.01, TEST_LON, channelWire(11))
+        val result = AppleWifiWlocCodec.decode(ByteArray(10) + first + duplicate, TEST_LAT, TEST_LON, 2_000.0).single()
+        assertEquals(TEST_LAT, result.latitude, 1e-7)
+        assertNull(result.appleWlocChannel)
+    }
+
+    @Test fun treatsMissingZeroWrongWireAndOutOfRangeChannelsAsUnknown() {
+        val invalidChannels = listOf(byteArrayOf(), channelWire(0), message(21, byteArrayOf(11)),
+            channelWire(234), channelWire(0x1_0000_000bL))
+        val response = ByteArray(10) + invalidChannels.flatMapIndexed { index, fields ->
+            wifiWire(mac(index + 1), TEST_LAT, TEST_LON, fields).toList()
+        }.toByteArray()
+        val points = AppleWifiWlocCodec.decode(response, TEST_LAT, TEST_LON, 300.0)
+        assertEquals(invalidChannels.size, points.size)
+        assertTrue(points.all { it.reportedChannel == null })
     }
 
     @Test fun missingSentinelMulticastAndDistantPositionsAreNotLocalRecords() {
@@ -97,6 +132,30 @@ class AppleWifiDiscoveryTest {
     private val region = RemoteWifiRegion.MAINLAND_CHINA
     private val oneTile = AppleWifiSearchPolicy(maxTileRequests = 1)
     private fun emptySeeds() = WigleSeedResult(emptyList(), 1, 0, 0, 0, false, false)
+
+    private fun repeatWlocLookup(earlierDistance: Double, nearby: RemoteWifiPoint): RemoteWifiPoint {
+        val discovery = AppleWifiDiscovery(policy = oneTile, localSeeds = { _, _ -> listOf(mac(1)) },
+            tileLookup = { _, _, _, _, _ -> emptyList() },
+            wlocLookup = { seeds, _, _, _, _ ->
+                if (seeds == listOf(mac(1))) listOf(point(2, earlierDistance).copy(appleWlocChannel = 6))
+                else {
+                    assertEquals(listOf(mac(2)), seeds)
+                    listOf(nearby)
+                }
+            })
+        val result = runBlocking { discovery.query(TEST_LAT, TEST_LON, region) }.points.single()
+        assertEquals(nearby.latitude, result.latitude, 0.0)
+        return result
+    }
+
+    @Test fun repeatedWlocLookupKeepsKnownChannelWhenNewerPositionOmitsIt() {
+        assertEquals(6, repeatWlocLookup(310.0, point(2, 100.0)).appleWlocChannel)
+    }
+
+    @Test fun repeatedWlocLookupKeepsMovedRecordsUnknownAndPrefersANewReportedChannel() {
+        assertNull(repeatWlocLookup(1_000.0, point(2, 100.0)).appleWlocChannel)
+        assertEquals(11, repeatWlocLookup(310.0, point(2, 100.0).copy(appleWlocChannel = 11)).appleWlocChannel)
+    }
 
     @Test fun aSeedSeenInABatchCanStillBeRefinedWithOneIndividualRequest() {
         var calls = 0

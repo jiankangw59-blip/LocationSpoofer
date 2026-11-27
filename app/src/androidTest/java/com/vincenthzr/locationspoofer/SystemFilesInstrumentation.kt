@@ -101,6 +101,11 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (lookupArguments?.getString("check") == "apple-wloc-channel-regression") {
+            val output = verifyAppleWlocChannel()
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (lookupArguments?.getString("check") == "satellite-count-fixture") {
             val output = satelliteCountFixture(
                 lookupArguments?.getString("phase"),
