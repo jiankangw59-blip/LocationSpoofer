@@ -42,14 +42,14 @@ internal fun MainViewModel.startSpoofing() {
         try {
             _uiState.update { it.copy(isSavingConfig = true) }
 
-            if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng)) {
-                fetchRemoteWifiSync(lat, lng)
-            }
-            if (state.mockCell && !hasLocalCellsWithin50m(lat, lng)) {
-                fetchRemoteCellsSync(lat, lng)
-            }
+            val lookup = beginLocationLookup(lat, lng, state.mockWifi, state.mockCell, explicitlyStarted = true)
+            val queryWifi = state.mockWifi && !hasLocalWifiWithin50m(lat, lng)
+            if (queryWifi) fetchRemoteWifiSync(lat, lng, lookup)
+            val queryCells = state.mockCell && !hasLocalCellsWithin50m(lat, lng)
+            if (queryCells) fetchRemoteCellsSync(lat, lng, lookup)
 
             evaluateMockCapabilitiesSuspend(lat, lng)
+            finishLocationLookup(lookup, state.mockWifi && !queryWifi, state.mockCell && !queryCells)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (!configurationTargetMatches(lat, lng)) return@launch
 
@@ -139,6 +139,7 @@ internal fun MainViewModel.stopSpoofing() {
     settingsRepository.isSpoofingActive = false
     mapMoveJob?.cancel()
     pointConfigurationJob?.cancel()
+    dismissLocationLookup()
     pointConfigurationJob = null
     locationSyncJob?.cancel()
     locationSyncJob = null

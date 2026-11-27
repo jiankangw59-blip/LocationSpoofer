@@ -17,6 +17,8 @@ import com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng
 import com.vincenthzr.locationspoofer.utils.GeoMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -26,6 +28,16 @@ import java.io.File
 import java.io.IOException
 
 class RemoteWifiCacheException(cause: Throwable) : IOException("Unable to save Wi-Fi query", cause)
+
+internal suspend fun notifyWifiRecordsFound(observer: ((Int) -> Unit)?, count: Int) {
+    if (observer == null) return
+    try {
+        observer(count)
+    } catch (_: Exception) {
+        // UI reporting is observational, but cancelling the query still stops its work.
+        currentCoroutineContext().ensureActive()
+    }
+}
 
 /** Stores the latest preview separately from simulation and collected environment records. */
 class RemoteWifiRepository(
@@ -40,13 +52,19 @@ class RemoteWifiRepository(
     private val mutex = Mutex()
     val lastSearchReport: AppleWifiSearchReport? get() = discovery?.lastReport
 
-    suspend fun query(latitude: Double, longitude: Double, region: RemoteWifiRegion): RemoteWifiSnapshot =
+    suspend fun query(
+        latitude: Double,
+        longitude: Double,
+        region: RemoteWifiRegion,
+        onRecordsFound: ((Int) -> Unit)? = null
+    ): RemoteWifiSnapshot =
         mutex.withLock {
             AppleWifiTileCodec.tileKey(latitude, longitude)
             try {
             val raw = withContext(Dispatchers.IO) {
                 discovery?.query(latitude, longitude, region) ?: client.query(latitude, longitude, region)
             }
+            notifyWifiRecordsFound(onRecordsFound, raw.points.size)
             val cached = withContext(Dispatchers.IO) {
                 try { readCache() } catch (error: kotlinx.coroutines.CancellationException) { throw error }
                 catch (_: Exception) { null }

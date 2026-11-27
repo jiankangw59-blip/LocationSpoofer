@@ -69,6 +69,7 @@ import com.vincenthzr.locationspoofer.viewmodel.FavoriteToggleResult
 import com.vincenthzr.locationspoofer.viewmodel.MainViewModel
 import com.vincenthzr.locationspoofer.viewmodel.ManageDataViewModel
 import com.vincenthzr.locationspoofer.viewmodel.fetchCurrentLocation
+import com.vincenthzr.locationspoofer.viewmodel.dismissLocationLookup
 import com.vincenthzr.locationspoofer.viewmodel.handleSpoofingIntent
 import com.vincenthzr.locationspoofer.viewmodel.importEnvironmentData
 import com.vincenthzr.locationspoofer.viewmodel.isDomesticEnvironment
@@ -269,6 +270,15 @@ fun LocationTab(
                 .onGloballyPositioned { searchBounds = it.boundsInRoot() }
 
             Box(modifier = Modifier.fillMaxSize()) {
+                val feedback = uiState.locationLookupFeedback
+                if (!searchActive && uiState.locationLookupVisible && feedback != null && !feedback.dismissed &&
+                    feedback.matchesPoint(uiState.latitudeInput.toDoubleOrNull(), uiState.longitudeInput.toDoubleOrNull())) {
+                    LocationLookupCard(
+                        feedback = feedback,
+                        onDismiss = { viewModel.dismissLocationLookup() },
+                        modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp)
+                    )
+                }
                 // 悬浮功能按钮（主动避让底部面板，在面板高度变化时平滑跟随）
                 Column(
                     modifier = Modifier

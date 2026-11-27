@@ -18,6 +18,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -38,6 +41,7 @@ import com.vincenthzr.locationspoofer.viewmodel.selectCollectedLocation
 import com.vincenthzr.locationspoofer.viewmodel.UpdateViewModel
 import com.vincenthzr.locationspoofer.viewmodel.getIgnoredVersion
 import com.vincenthzr.locationspoofer.viewmodel.handleSpoofingIntent
+import com.vincenthzr.locationspoofer.viewmodel.setLocationLookupVisible
 import com.vincenthzr.locationspoofer.viewmodel.isDomesticEnvironment
 import com.vincenthzr.locationspoofer.viewmodel.setIgnoredVersion
 import org.koin.androidx.compose.koinViewModel
@@ -91,6 +95,20 @@ fun MainScaffoldScreen(
     var mapController by remember { mutableStateOf<AppMapController?>(null) }
     var pendingImportedLocationId by remember { mutableStateOf<Long?>(null) }
     val currentSelectedTab by rememberUpdatedState(selectedTab)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val isLocationPage = selectedTab == BottomTab.Location.ordinal && currentSubScreen == MainSubScreen.None
+    DisposableEffect(viewModel, lifecycle, isLocationPage) {
+        fun refreshLookupVisibility() {
+            viewModel.setLocationLookupVisible(isLocationPage && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+        }
+        val observer = LifecycleEventObserver { _, _ -> refreshLookupVisibility() }
+        lifecycle.addObserver(observer)
+        refreshLookupVisibility()
+        onDispose {
+            lifecycle.removeObserver(observer)
+            viewModel.setLocationLookupVisible(false)
+        }
+    }
     val isDark = isSystemInDarkTheme()
     val updateViewModel: UpdateViewModel = koinViewModel()
 

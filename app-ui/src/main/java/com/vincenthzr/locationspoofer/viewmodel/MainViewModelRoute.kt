@@ -118,6 +118,7 @@ internal fun MainViewModel.joystickMaxSpeedMs(): Float =
 
 internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging: Boolean = false) {
     val samePoint = configurationTargetMatches(lat, lng)
+    if (!samePoint) discardLocationLookupForNewPoint(lat, lng)
     val finalizingDrag = !isDragging && pointConfigurationJob != null &&
         pointConfigurationJob === draggingPointConfigurationJob
     if (!samePoint || finalizingDrag) {
@@ -138,13 +139,13 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
     if (samePoint && pointConfigurationJob?.isActive == true) return
     if (state.isSpoofingActive) {
         pointConfigurationJob = viewModelScope.launch {
-            if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng) && !isDragging) {
-                fetchRemoteWifiSync(lat, lng)
-            }
-            if (state.mockCell && !hasLocalCellsWithin50m(lat, lng) && !isDragging) {
-                fetchRemoteCellsSync(lat, lng)
-            }
+            val lookup = if (isDragging) null else beginLocationLookup(lat, lng, state.mockWifi, state.mockCell)
+            val queryWifi = !isDragging && state.mockWifi && !hasLocalWifiWithin50m(lat, lng)
+            if (queryWifi) fetchRemoteWifiSync(lat, lng, lookup)
+            val queryCells = !isDragging && state.mockCell && !hasLocalCellsWithin50m(lat, lng)
+            if (queryCells) fetchRemoteCellsSync(lat, lng, lookup)
             evaluateMockCapabilitiesSuspend(lat, lng)
+            finishLocationLookup(lookup, state.mockWifi && !queryWifi, state.mockCell && !queryCells)
             if (!settingsRepository.isSpoofingActive || !configurationTargetMatches(lat, lng)) return@launch
             val updatedState = _uiState.value
             locationRepository.updateConfig(
@@ -533,6 +534,9 @@ internal fun MainViewModel.loadSavedLocation(loc: SavedLocation) {
         it.copy(
             latitudeInput = String.format(java.util.Locale.US, "%.6f", loc.lat),
             longitudeInput = String.format(java.util.Locale.US, "%.6f", loc.lng),
+            locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
+                feedback.matchesPoint(loc.lat, loc.lng)
+            },
             collectedWifiJson = loc.wifiJson,
             collectedCellJson = loc.cellJson,
             wifiApCount = wifiCount,

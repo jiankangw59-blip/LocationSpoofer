@@ -57,7 +57,6 @@ class MainViewModel(
     internal var pointConfigurationJob: Job? = null
     internal var draggingPointConfigurationJob: Job? = null
     internal var selectedPoiAddress: SelectedPoiAddress? = null
-    internal var lastAppleWifiMetadataNotice: WifiRepository.AppleWifiImportResult? = null
 
     val collectionRoutes = environmentDao.observeCollectionRoutes().distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())

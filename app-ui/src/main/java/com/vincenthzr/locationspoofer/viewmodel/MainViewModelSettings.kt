@@ -688,10 +688,9 @@ internal fun MainViewModel.handleSpoofingIntent(intent: SpoofingIntent) {
             )
         }
 
-        is SpoofingIntent.SetSearchActive -> _spoofingUiState.update {
-            it.copy(
-                isSearchActive = intent.active
-            )
+        is SpoofingIntent.SetSearchActive -> {
+            if (intent.active) dismissLocationLookup()
+            _spoofingUiState.update { it.copy(isSearchActive = intent.active) }
         }
 
         SpoofingIntent.HideSearchResults -> _spoofingUiState.update {

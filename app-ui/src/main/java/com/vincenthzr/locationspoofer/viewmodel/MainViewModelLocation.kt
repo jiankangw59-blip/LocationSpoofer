@@ -1,21 +1,26 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
 import android.content.Context
-import android.widget.Toast
 import java.util.Locale
 import androidx.lifecycle.viewModelScope
 import com.amap.api.location.AMapLocationClient
 import com.amap.api.location.AMapLocationClientOption
-import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadataStatus
-import com.vincenthzr.locationspoofer.data.repository.WifiRepository
+import com.vincenthzr.locationspoofer.data.model.LocationLookupFeedback
+import com.vincenthzr.locationspoofer.data.model.LocationLookupSource.CELL
+import com.vincenthzr.locationspoofer.data.model.LocationLookupSource.OPEN_CELL
+import com.vincenthzr.locationspoofer.data.model.LocationLookupSource.WIFI
+import com.vincenthzr.locationspoofer.data.model.LocationLookupSource.WIFI_METADATA
+import com.vincenthzr.locationspoofer.data.model.LocationLookupSource.WIGLE_WIFI
+import com.vincenthzr.locationspoofer.utils.RemoteCellNoCoverageException
+import com.vincenthzr.locationspoofer.utils.RemoteCellNoSeedException
+import com.vincenthzr.locationspoofer.utils.RemoteWifiNoCoverageException
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.screen.AppPoiItem
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils
 import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
+import com.vincenthzr.locationspoofer.utils.WigleWifiLookupResult
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -48,7 +53,10 @@ internal fun MainViewModel.fetchCurrentLocation(ctx: Context, forceCallback: ((D
                         it.copy(
                             latitudeInput = String.format("%.6f", loc.latitude),
                             longitudeInput = String.format("%.6f", loc.longitude),
-                            showCoordinateError = false
+                            showCoordinateError = false,
+                            locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
+                                feedback.matchesPoint(loc.latitude, loc.longitude)
+                            }
                         )
                     }
                     forceCallback?.invoke(loc.latitude, loc.longitude)
@@ -157,7 +165,10 @@ private fun MainViewModel.applyNativeLocation(
             it.copy(
                 latitudeInput = String.format("%.6f", finalLat),
                 longitudeInput = String.format("%.6f", finalLng),
-                showCoordinateError = false
+                showCoordinateError = false,
+                locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
+                    feedback.matchesPoint(finalLat, finalLng)
+                }
             )
         }
         forceCallback?.invoke(finalLat, finalLng)
@@ -268,7 +279,12 @@ internal fun MainViewModel.selectSearchPoint(poi: AppPoiItem) {
     }
     selectedPoiAddress = address
     _uiState.update {
-        it.copy(latitudeInput = poi.lat.toString(), longitudeInput = poi.lng.toString(), showCoordinateError = false)
+        it.copy(
+            latitudeInput = poi.lat.toString(),
+            longitudeInput = poi.lng.toString(),
+            showCoordinateError = false,
+            locationLookupFeedback = null
+        )
     }
     evaluateMockCapabilities()
 }
@@ -276,6 +292,7 @@ internal fun MainViewModel.selectSearchPoint(poi: AppPoiItem) {
 internal fun MainViewModel.updateLongitude(value: String) {
     if (isValidCoord(value)) {
         if (_uiState.value.longitudeInput.toDoubleOrNull() != value.toDoubleOrNull()) {
+            discardLocationLookupForNewPoint(_uiState.value.latitudeInput.toDoubleOrNull(), value.toDoubleOrNull())
             selectedPoiAddress = null
             mapMoveJob?.cancel()
             pointConfigurationJob?.cancel()
@@ -288,6 +305,7 @@ internal fun MainViewModel.updateLongitude(value: String) {
 internal fun MainViewModel.updateLatitude(value: String) {
     if (isValidCoord(value)) {
         if (_uiState.value.latitudeInput.toDoubleOrNull() != value.toDoubleOrNull()) {
+            discardLocationLookupForNewPoint(value.toDoubleOrNull(), _uiState.value.longitudeInput.toDoubleOrNull())
             selectedPoiAddress = null
             mapMoveJob?.cancel()
             pointConfigurationJob?.cancel()
@@ -345,6 +363,9 @@ internal fun MainViewModel.selectCollectedLocation(locationId: Long) {
                 it.copy(
                     latitudeInput = record.location.lat.toString(),
                     longitudeInput = record.location.lng.toString(),
+                    locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
+                        feedback.matchesPoint(record.location.lat, record.location.lng)
+                    },
                     selectedCollectionRouteId = null,
                     pinnedCollectedLocationId = locationId,
                     pinnedLocationName = name
@@ -493,12 +514,20 @@ internal suspend fun MainViewModel.hasLocalWifiWithin50m(lat: Double, lng: Doubl
 internal suspend fun MainViewModel.hasLocalCellsWithin50m(lat: Double, lng: Double): Boolean =
     environmentRecordsAt(lat, lng).any { it.cells.isNotEmpty() }
 
-internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double) {
+internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double, lookup: LocationLookupFeedback?) {
     withContext(Dispatchers.Main) {
         _uiState.update { it.copy(wifiLoadStatus = com.vincenthzr.locationspoofer.data.model.WifiLoadStatus.LOADING) }
     }
+    var appleRecords: Int? = null
     val imported = try {
-        val result = wifiRepository.fetchAppleWifi(lat, lng)
+        val onRecordsFound: ((Int) -> Unit)? = lookup?.let {
+            { count ->
+                appleRecords = count
+                reportLocationLookup(lookup, WIFI, appleWifiLine(count))
+                reportLocationLookup(lookup, WIFI_METADATA, R.string.lookup_metadata_pending)
+            }
+        }
+        val result = wifiRepository.fetchAppleWifi(lat, lng, onRecordsFound)
         withTimeoutOrNull(5_000) {
             environmentLocations.first { records ->
                 records.any { it.location.id == result.recordId && it.wifis.isNotEmpty() }
@@ -509,12 +538,22 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
         result
     } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
-    } catch (_: Exception) {
+    } catch (error: Exception) {
         // The existing WiGLE path remains a fallback when Apple has no usable data.
+        val count = appleRecords
+        if (count != null) {
+            reportLocationLookup(lookup, WIFI, R.string.lookup_wifi_import_failed, count)
+        } else {
+            reportLocationLookup(lookup, WIFI, if (error is RemoteWifiNoCoverageException)
+                R.string.lookup_wifi_no_data else R.string.lookup_wifi_failed)
+        }
+        reportLocationLookup(lookup, WIFI_METADATA, if (count == null)
+            R.string.lookup_metadata_not_requested else R.string.lookup_metadata_unfinished)
         null
     }
     if (imported != null) {
-        showAppleWifiMetadataNotice(lat, lng, imported)
+        reportLocationLookup(lookup, WIFI, appleWifiLine(imported.accessPointCount, imported.reusedPreview))
+        reportLocationLookup(lookup, WIFI_METADATA, appleMetadataLine(imported))
         return
     }
     val settingsToken = settingsRepository.getWigleApiToken()
@@ -539,9 +578,11 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
     val wgsLat = wgs84.lat
     val wgsLng = wgs84.lng
 
+    reportLocationLookup(lookup, WIGLE_WIFI, R.string.lookup_wigle_pending)
     try {
-        val rawJsonArrayString = wifiRepository.fetchWifiData(wgsLat, wgsLng, settingsToken)
-        val nearbyArr = org.json.JSONArray(rawJsonArrayString)
+        val reply = wifiRepository.fetchWifiDataResult(wgsLat, wgsLng, settingsToken)
+        val records = (reply as? WigleWifiLookupResult.Records)?.json ?: "[]"
+        val nearbyArr = org.json.JSONArray(records)
         if (nearbyArr.length() > 0) {
             val wifiObj = org.json.JSONObject()
             // A WiGLE observation describes visible access points, not the
@@ -604,6 +645,7 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
                 }
             }
 
+            reportLocationLookup(lookup, WIGLE_WIFI, R.string.lookup_wigle_count, formattedNearby.length())
             withContext(Dispatchers.Main) {
                 evaluateMockCapabilities()
                 // 刷新记录统计总数
@@ -613,6 +655,7 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
                 }
             }
         } else {
+            reportLocationLookup(lookup, WIGLE_WIFI, wigleFallbackEmptyLine(reply))
             withContext(Dispatchers.Main) {
                 _uiState.update {
                     it.copy(
@@ -626,6 +669,7 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
     } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
     } catch (error: Exception) {
+        reportLocationLookup(lookup, WIGLE_WIFI, R.string.lookup_wigle_failed)
         android.util.Log.w("LocationSpoofer", "WiGLE fallback unavailable: ${error.javaClass.simpleName}")
         withContext(Dispatchers.Main) {
             _uiState.update {
@@ -639,33 +683,13 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
     }
 }
 
-private suspend fun MainViewModel.showAppleWifiMetadataNotice(
-    lat: Double,
-    lng: Double,
-    imported: WifiRepository.AppleWifiImportResult
-): Unit = withContext(Dispatchers.Main) {
-    currentCoroutineContext().ensureActive()
-    if (!configurationTargetMatches(lat, lng) || lastAppleWifiMetadataNotice == imported) return@withContext
-
-    val message = when (imported.metadataStatus) {
-        RemoteWifiMetadataStatus.NOT_REQUESTED, RemoteWifiMetadataStatus.MATCHED -> null
-        RemoteWifiMetadataStatus.NOT_CONFIGURED -> context.getString(R.string.remote_wifi_metadata_no_key)
-        RemoteWifiMetadataStatus.NO_MATCH -> context.getString(R.string.remote_wifi_metadata_no_match)
-        RemoteWifiMetadataStatus.UNAVAILABLE -> when (val httpStatus = imported.metadataHttpStatus) {
-            401, 403 -> context.getString(R.string.remote_wifi_metadata_auth, httpStatus)
-            null -> context.getString(R.string.remote_wifi_metadata_unavailable)
-            else -> context.getString(R.string.remote_wifi_metadata_http, httpStatus)
-        }
-    }
-    lastAppleWifiMetadataNotice = if (message != null) imported else null
-    if (message != null) Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-}
-
-internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double) {
+internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double, lookup: LocationLookupFeedback?) {
+    reportLocationLookup(lookup, CELL, R.string.lookup_cell_pending)
     val position = com.vincenthzr.locationspoofer.utils.CoordinateUtils.gcj02ToWgs84(lat, lng)
     val region = if (position.lat in 18.0..54.0 && position.lng in 73.0..135.0)
         com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion.MAINLAND_CHINA
     else com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion.GLOBAL
+    var appleRecords: Int? = null
     try {
         val latest = try { remoteCellRepository.loadLatest() }
             catch (error: kotlinx.coroutines.CancellationException) { throw error }
@@ -676,6 +700,9 @@ internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double
                     com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng(it.latitude, it.longitude)) <= 2.0
         }
         val snapshot = cached ?: remoteCellRepository.query(position.lat, position.lng, region)
+        appleRecords = snapshot.points.size
+        reportLocationLookup(lookup, CELL, if (cached != null)
+            R.string.lookup_cell_preview else R.string.lookup_cell_count, snapshot.points.size)
         val id = remoteEnvironmentImporter.importCells(snapshot)
         withTimeoutOrNull(5_000) {
             environmentLocations.first { records -> records.any { it.location.id == id && it.cells.isNotEmpty() } }
@@ -685,10 +712,23 @@ internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double
         return
     } catch (error: kotlinx.coroutines.CancellationException) { throw error }
     catch (error: com.vincenthzr.locationspoofer.utils.OpenCellLookupException) {
+        reportLocationLookup(lookup, CELL, R.string.lookup_cell_failed)
+        reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_failed)
         android.util.Log.w("LocationSpoofer", "OpenCellID discovery failed: HTTP=${error.httpStatus}, code=${error.apiCode}")
         return
     }
-    catch (_: Exception) { /* Continue with existing OpenCellID data when expansion is unavailable. */ }
+    catch (error: Exception) {
+        val count = appleRecords
+        if (count != null) {
+            reportLocationLookup(lookup, CELL, R.string.lookup_cell_import_failed, count)
+        } else {
+            reportLocationLookup(lookup, CELL, when (error) {
+                is RemoteCellNoSeedException -> R.string.lookup_cell_no_seed
+                is RemoteCellNoCoverageException -> R.string.lookup_cell_no_data
+                else -> R.string.lookup_cell_failed
+            })
+        }
+    }
     val tokenToUse = settingsRepository.getOpencellidApiToken()
     if (tokenToUse.isBlank()) {
         return
@@ -697,12 +737,14 @@ internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double
     val wgsLat = wgs84.lat
     val wgsLng = wgs84.lng
 
+    reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_pending)
     try {
         val rawJsonArrayString = opencellidClient.fetchCellData(wgsLat, wgsLng, tokenToUse)
         val cellsArray = org.json.JSONArray(rawJsonArrayString)
         if (cellsArray.length() > 0) {
             val formattedCells = normalizeCellArrayForStorage(cellsArray)
             if (formattedCells.length() == 0) {
+                reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_no_data)
                 return
             }
 
@@ -728,6 +770,7 @@ internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double
                 }
             }
 
+            reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_count, formattedCells.length())
             withContext(Dispatchers.Main) {
                 evaluateMockCapabilities()
                 // 刷新记录统计总数
@@ -736,10 +779,13 @@ internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double
                     _uiState.update { it.copy(environmentRecordCount = count) }
                 }
             }
+        } else {
+            reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_no_data)
         }
     } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
     } catch (error: Exception) {
+        reportLocationLookup(lookup, OPEN_CELL, R.string.lookup_open_cell_failed)
         android.util.Log.w("LocationSpoofer", "OpenCellID fallback unavailable: ${error.javaClass.simpleName}")
     }
 }

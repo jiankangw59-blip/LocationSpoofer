@@ -94,6 +94,8 @@ data class AppState(
     val isSpoofingActive: Boolean = false,
     val wifiLoadStatus: WifiLoadStatus = WifiLoadStatus.IDLE,
     val wifiApCount: Int = 0,
+    val locationLookupVisible: Boolean = false,
+    val locationLookupFeedback: LocationLookupFeedback? = null,
     val savedLocations: List<SavedLocation> = emptyList(),
     val searchKeyword: String = "",
     val searchMode: SearchMode = SearchMode.NETWORK,
