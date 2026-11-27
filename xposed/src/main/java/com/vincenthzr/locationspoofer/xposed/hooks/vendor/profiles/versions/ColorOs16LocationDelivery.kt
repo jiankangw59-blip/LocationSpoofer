@@ -2,13 +2,22 @@ package com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions
 
 import com.vincenthzr.locationspoofer.xposed.hooks.getCurrentSpoofedMotion
 import android.location.Location
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
 import com.vincenthzr.locationspoofer.xposed.hooks.SystemHookUtils
 import com.vincenthzr.locationspoofer.xposed.hooks.SatelliteProfile
 import com.vincenthzr.locationspoofer.xposed.hooks.FINE_LOCATION_PERMISSION_LEVEL
+import com.vincenthzr.locationspoofer.xposed.hooks.GpsProductionSession
+import com.vincenthzr.locationspoofer.xposed.hooks.acceptColorOsGpsFix
 import com.vincenthzr.locationspoofer.xposed.hooks.cachedGeoidAltitudeForLocation
+import com.vincenthzr.locationspoofer.xposed.hooks.colorOsGpsDemand
+import com.vincenthzr.locationspoofer.xposed.hooks.currentColorOsGpsEpoch
+import com.vincenthzr.locationspoofer.xposed.hooks.missColorOsGpsAdmission
+import com.vincenthzr.locationspoofer.xposed.hooks.needsColorOsGpsFixObservation
+import com.vincenthzr.locationspoofer.xposed.hooks.usesMeasuredColorOsGpsLifecycle
 import com.vincenthzr.locationspoofer.xposed.hooks.resolveGeoidAltitudeOnWorker
 import com.vincenthzr.locationspoofer.xposed.utils.RouteEngine
 import com.vincenthzr.locationspoofer.xposed.utils.SpoofedMotion
@@ -25,6 +34,7 @@ import io.github.libxposed.api.XposedInterface
 import org.json.JSONObject
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.Timer
 import java.util.TimerTask
@@ -46,6 +56,9 @@ internal class ColorOs16LocationDelivery(
         Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
     )
     private val lastLocationScope = CallScope<Any>()
+    private data class GpsReport(val registration: Any, val result: Any)
+    private val gpsReportScope = CallScope<GpsReport>()
+    private var gpsAdmissionFields = emptyMap<Class<*>, Field>()
     private var policyKey: String? = null
     private var updateRegistrations: Method? = null
     private val hooks = mutableListOf<XposedInterface.HookHandle>()
@@ -235,9 +248,16 @@ internal class ColorOs16LocationDelivery(
                     } else null
                     val args = chain.args.toTypedArray()
                     if (replacement != null) args[0] = replacement
-                    chain.proceed(args)
+                    val report = if (replacement != null) gpsReportScope.current else null
+                    val gpsReportAccepted = replacement != null && report != null &&
+                        report.registration === registration && report.result === originalResult
+                    val epoch = if (gpsReportAccepted) currentColorOsGpsEpoch() else null
+                    val operation = chain.proceed(args)
+                    if (gpsReportAccepted) observeGpsAdmission(operation, epoch, GpsProductionSession.Source.PROVIDER_REPORT)
+                    operation
                 }
             }
+            if (usesMeasuredColorOsGpsLifecycle()) installGpsReportScope(manager, result, reported)
 
             // getLastLocationUnsafe may already be inlined into this system-server method.
             // Its caller must run through the hook for the scoped replacement to take effect.
@@ -270,6 +290,8 @@ internal class ColorOs16LocationDelivery(
         if (!handler.post(reconcileTask)) reconciliationQueued.set(false)
     }
 
+    fun refreshProductionDemandAfterReload() = requestReconciliation()
+
     /** Called only for configuration and registration events, never by a periodic timer. */
     private fun reconcileDemand() {
         HookStatus.workTick("coloros_location_reconcile")
@@ -284,6 +306,8 @@ internal class ColorOs16LocationDelivery(
             } }
         }
         var wanted = false
+        var gpsWanted = false
+        var gpsObserved = config?.optBoolean("active", false) == false
         if (config != null && config.optBoolean("active", false)) {
             for (owner in snapshot) guarded("active demand") {
                 // Copy only immutable identity/state under the native lock. In particular,
@@ -291,16 +315,22 @@ internal class ColorOs16LocationDelivery(
                 val registrations = registrationSnapshot(owner) { registration ->
                     Pair(getIdentity.invoke(registration), registrationIsActive.invoke(registration) == true)
                 }
+                val gps = nameField.get(owner) == LocationManager.GPS_PROVIDER
                 for ((identity, active) in registrations) {
                         if (!isTarget(owner, identity, config)) continue
 
                         HookStatus.workTick("coloros_location_target_seen")
                         if (active) {
                             wanted = true
+                            if (gps) gpsWanted = true
                             HookStatus.workTick("coloros_location_target_active")
                         } else HookStatus.workTick("coloros_location_target_inactive")
                 }
+                if (gps) gpsObserved = true
             }
+        }
+        if (gpsObserved && enabled && !module.retiringGeneration && module.readConfig() === config && gpsAdmissionFields.isNotEmpty()) {
+            module.colorOsGpsDemand(gpsWanted)
         }
         output?.setRequired(enabled && !module.retiringGeneration && wanted)
     }
@@ -344,6 +374,7 @@ internal class ColorOs16LocationDelivery(
         val snapshot = synchronized(managers) { managers.toList() }
         for (owner in snapshot) {
             guarded("provider heartbeat") {
+                val gps = gpsAdmissionFields.isNotEmpty() && nameField.get(owner) == LocationManager.GPS_PROVIDER
                 // Use Android's multiplexer lock, reentrancy guard and active-registration
                 // filter. Android performs expiration, AppOps, throttling, removal and IPC.
                 val operation = Function<Any, Any?> { registration ->
@@ -354,10 +385,71 @@ internal class ColorOs16LocationDelivery(
                         if (!isTarget(owner, caller, currentConfig)) return@registration null
                         val location = makeLocation(owner) ?: return@registration null
                         val result = wrapResult.invoke(null, arrayOf(location) as Any)
-                        acceptLocation.invoke(registration, result)
+                        val epoch = if (gps) currentColorOsGpsEpoch() else null
+                        val accepted = acceptLocation.invoke(registration, result)
+                        if (epoch != null) observeGpsAdmission(accepted, epoch, GpsProductionSession.Source.HEARTBEAT)
+                        accepted
                     }
                 }
                 deliverToListeners.invoke(owner, operation)
+            }
+        }
+    }
+
+    private fun installGpsReportScope(manager: Class<*>, result: Class<*>, reported: Method) {
+        guarded("GPS report timing support") {
+            // This ROM's report Function is distinct from onActive's cached delivery.
+            val operation = manager.getDeclaredMethod("lambda\$onReportLocation\$18", result, registrationClass)
+            check(Modifier.isStatic(operation.modifiers) && operation.isSynthetic && operation.returnType == acceptLocation.returnType)
+            val function = Class.forName("${manager.name}\$\$ExternalSyntheticLambda21", false, loader)
+            check(Function::class.java.isAssignableFrom(function))
+            val apply = function.getDeclaredMethod("apply", Any::class.java)
+            val reportedResult = function.getDeclaredField("f\$0").accessible()
+            check(reportedResult.type == result)
+            val admissions = listOf("LocationRegistration\$2", "GetCurrentLocationListenerRegistration\$1").associate { name ->
+                val type = Class.forName("${manager.name}\$$name", false, loader)
+                val payload = type.getDeclaredField("val\$locationResult").accessible()
+                check(payload.type == result && operation.returnType.isAssignableFrom(type))
+                type to payload
+            }
+            check(listOf(reported, deliverToListeners, apply, operation).all { module.deoptimize(it) })
+            hook(apply) { chain ->
+                val report = if (!enabled || module.retiringGeneration) null else guarded("GPS report origin") {
+                    val registration = chain.args.singleOrNull() ?: return@guarded null
+                    val owner = ownerField.get(registration)
+                    if (nameField.get(owner) != LocationManager.GPS_PROVIDER || !needsColorOsGpsFixObservation()) {
+                        return@guarded null
+                    }
+                    val input = reportedResult.get(chain.thisObject) ?: return@guarded null
+                    GpsReport(registration, input)
+                }
+                gpsReportScope.withValue(report) { chain.proceed(chain.args.toTypedArray()) }
+            }
+            gpsAdmissionFields = admissions
+        }
+        if (gpsAdmissionFields.isEmpty()) HookStatus.workEventAndRequestSnapshot("gnss_gps_timing_unavailable")
+    }
+
+    private fun observeGpsAdmission(
+        operation: Any?, epoch: GpsProductionSession.Epoch?, source: GpsProductionSession.Source
+    ) {
+        if (operation == null || !enabled || module.retiringGeneration) return
+        val acceptedAt = SystemClock.elapsedRealtimeNanos()
+        val valid = guarded("GPS fix timing") {
+            // A denied or expired one-shot can return a non-null operation that will send null.
+            val field = gpsAdmissionFields[operation.javaClass] ?: error("Unknown GPS delivery operation")
+            val payload = field.get(operation) ?: return@guarded false
+            val locations = resultAsList.invoke(payload) as List<*>
+            locations.any {
+                it is Location && it.provider == LocationManager.GPS_PROVIDER &&
+                    it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0 && it.elapsedRealtimeNanos > 0L
+            }
+        }
+        guarded("GPS lifecycle observation") {
+            when (valid) {
+                true -> module.acceptColorOsGpsFix(epoch, acceptedAt, source)
+                false -> Unit
+                null -> missColorOsGpsAdmission(epoch)
             }
         }
     }

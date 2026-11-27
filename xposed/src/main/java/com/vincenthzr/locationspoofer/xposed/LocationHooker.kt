@@ -187,20 +187,25 @@ class LocationHooker : XposedModule() {
             vendorExtraHooks.filterIsInstance<TelephonyCallbackDelivery>().flatMap { it.prepareReloadHandoff().toList() }
         // A new module instance receives this bootstrap-owned state. Never pass this module or
         // module-defined registration records across the classloader boundary.
-        param.setSavedInstanceState(hashMapOf<String, Any>(
-            "host" to HotReloadHost(currentPackageName, loader).save(),
-            "callbacks" to arrayOf(
-                capturedLocationListeners.toTypedArray(), capturedAMapListeners.toTypedArray(),
-                capturedBaiduListeners.toTypedArray(), capturedTencentListeners.toTypedArray(),
-                capturedFusedLocationCallbacks.toTypedArray(), bleScanTimers.keys.toTypedArray()
-            ),
-            "system_location" to saveSystemLocationReloadState(),
-            "system_ble" to saveSystemBleReloadState(),
-            "delivery_handoff" to handoffCallbacks.toTypedArray(),
-            "query_handoff" to XposedHelpers.synchronousQueryMethods.keys.toTypedArray(),
-            "query_config" to (readConfig()?.toString() ?: "{}"),
-            "sensor" to SensorStepHooker.saveReloadState()
-        ))
+        try {
+            param.setSavedInstanceState(hashMapOf<String, Any>(
+                "host" to HotReloadHost(currentPackageName, loader).save(),
+                "callbacks" to arrayOf(
+                    capturedLocationListeners.toTypedArray(), capturedAMapListeners.toTypedArray(),
+                    capturedBaiduListeners.toTypedArray(), capturedTencentListeners.toTypedArray(),
+                    capturedFusedLocationCallbacks.toTypedArray(), bleScanTimers.keys.toTypedArray()
+                ),
+                "system_location" to saveSystemLocationReloadState(),
+                "system_ble" to saveSystemBleReloadState(),
+                "delivery_handoff" to handoffCallbacks.toTypedArray(),
+                "query_handoff" to XposedHelpers.synchronousQueryMethods.keys.toTypedArray(),
+                "query_config" to (readConfig()?.toString() ?: "{}"),
+                "sensor" to SensorStepHooker.saveReloadState()
+            ))
+        } catch (error: Throwable) {
+            resumeColorOsGpsSessionAfterReload()
+            throw error
+        }
         retiringGeneration = true
         val worker = synchronized(pollingLock) {
             val previous = configWorker
@@ -209,9 +214,16 @@ class LocationHooker : XposedModule() {
             previous?.interrupt()
             previous
         }
-        worker?.join(2_000)
-        if (worker?.isAlive == true || !serviceDiscovery.closeIfIdle()) {
+        val joined = try {
+            worker?.join(2_000)
+            true
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        if (!joined || worker?.isAlive == true || !serviceDiscovery.closeIfIdle()) {
             retiringGeneration = false
+            resumeColorOsGpsSessionAfterReload()
             startConfigWorker()
             serviceDiscovery.request()
             return false
@@ -247,6 +259,7 @@ class LocationHooker : XposedModule() {
 
     override fun onHotReloaded(param: XposedModuleInterface.HotReloadedParam) {
         val state = param.savedInstanceState as? Map<*, *>
+        restoreColorOsGpsSession(state?.get("system_location"))
         var queryHandoff: SynchronousQueryHandoff? = null
         reinstallAfterHotReload(
             state = state?.get("host"),
@@ -261,7 +274,7 @@ class LocationHooker : XposedModule() {
                 try {
                     (state?.get("delivery_handoff") as? Array<*>)?.filterNotNull()?.takeIf { it.isNotEmpty() }?.let {
                         // Install before super removes the previous generation's retained recipient filters.
-                        deliveryHandoff = CallbackDeliveryHandoff(it.toTypedArray())
+                        deliveryHandoff = CallbackDeliveryHandoff(it.toTypedArray(), ::claimedGpsLifecycleDelivery)
                     }
                 } catch (error: Throwable) {
                     queryHandoff?.close()
@@ -282,6 +295,7 @@ class LocationHooker : XposedModule() {
                     (callbacks?.getOrNull(index) as? Array<*>)?.filterNotNull()?.let { list.addAll(it) }
                 }
                 restoreSystemLocationReloadState(state?.get("system_location"))
+                resumeColorOsGpsSessionAfterReload()
                 restoreSystemBleReloadState(state?.get("system_ble"))
                 SensorStepHooker.restoreReloadState(state?.get("sensor"))
                 (callbacks?.getOrNull(5) as? Array<*>)?.filterNotNull()?.forEach { callback ->

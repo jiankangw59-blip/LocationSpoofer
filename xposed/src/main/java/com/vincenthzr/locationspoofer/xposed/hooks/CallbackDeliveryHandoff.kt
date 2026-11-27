@@ -7,7 +7,10 @@ import io.github.libxposed.api.XposedInterface
 import java.util.concurrent.ConcurrentHashMap
 
 /** Recipient-specific barrier spanning old-hook removal and native subscription rediscovery. */
-internal class CallbackDeliveryHandoff(callbacks: Array<Any>) {
+internal class CallbackDeliveryHandoff(
+    callbacks: Array<Any>,
+    claimedLifecycle: (IBinder, String) -> Boolean
+) {
     private val targets = ConcurrentHashMap<IBinder, Any>()
     private val handles = mutableListOf<XposedInterface.HookHandle>()
     init {
@@ -19,7 +22,7 @@ internal class CallbackDeliveryHandoff(callbacks: Array<Any>) {
         callbacks.map { it.javaClass }.distinct().forEach { type ->
             type.declaredMethods.map { it.name }.distinct().filter { it in names }.forEach { name ->
                 handles += XposedHelpers.hookAllMethods(type, name) { chain, _ ->
-                    if (binder(chain.thisObject)?.let { targets.containsKey(it) } == true) null
+                    if (binder(chain.thisObject)?.let { targets.containsKey(it) && !claimedLifecycle(it, name) } == true) null
                     else chain.proceed(chain.args.toTypedArray())
                 }
             }

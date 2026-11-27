@@ -12,7 +12,8 @@ import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class NativeSignalRegistration(
-    val listener: Any, val packageName: String, val uid: Int, val active: Boolean
+    val listener: Any, val packageName: String, val uid: Int, val active: Boolean,
+    val registrationIdentity: Any
 )
 
 /** Follow Android's accepted and active GNSS registrations, including live AppOps changes.
@@ -118,7 +119,7 @@ internal class NativeSignalGate(
                 key to NativeSignalRegistration(listener,
                     method(identity.javaClass, "getPackageName").invoke(identity) as String,
                     method(identity.javaClass, "getUid").invoke(identity) as Int,
-                    active.invoke(value) == true)
+                    active.invoke(value) == true, value)
             }.toMap()
         }
         if (statusType.isInstance(provider)) statuses = snapshot else nmeas = snapshot

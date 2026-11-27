@@ -18,13 +18,17 @@ package com.vincenthzr.locationspoofer.xposed.hooks
 
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.VendorRegistry
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.IInterface
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.vincenthzr.locationspoofer.xposed.LocationHooker
 import com.vincenthzr.locationspoofer.xposed.diagnostics.HookStatus
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemComponent
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.SystemClassLocator
+import com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions.ColorOs16LocationDelivery
 import com.vincenthzr.locationspoofer.xposed.hooks.vendor.profiles.versions.ColorOs16Vendor
 import com.vincenthzr.locationspoofer.xposed.utils.*
 import io.github.libxposed.api.*
@@ -102,9 +106,110 @@ private data class GnssStatusRegistrationInfo(
     val packageName: String,
     val registeredTime: Long = System.currentTimeMillis(),
     @Volatile var started: Boolean = false,
-    @Volatile var accepted: Boolean = true
+    @Volatile var accepted: Boolean = true,
+    @Volatile var acceptedAtElapsedNs: Long = if (accepted) SystemClock.elapsedRealtimeNanos() else Long.MAX_VALUE,
+    val registrationIdentity: Any = Any()
 )
 private val activeGnssStatusBinders = BinderRegistrationMap<GnssStatusRegistrationInfo> { locationDemandChanged?.invoke() }
+private data class GpsLifecycleRecipient(val binder: IBinder, val registrationIdentity: Any, val frameworkIdentity: Any)
+private val colorOsGpsSession = GpsProductionSession<GpsLifecycleRecipient>()
+private val gpsLifecycleHandler by lazy { Handler(Looper.getMainLooper()) }
+@Volatile private var gpsLifecyclePermit = ThreadLocal<Array<Any>>()
+
+internal fun usesMeasuredColorOsGpsLifecycle(): Boolean = VendorRegistry.active === ColorOs16Vendor &&
+    Build.FINGERPRINT == "OnePlus/PLQ110/OP6113L1:16/BP2A.250605.015/B.25ec003-5711f4-5711f5:user/release-keys"
+
+internal fun claimedGpsLifecycleDelivery(binder: IBinder?, method: String): Boolean =
+    matchesGpsLifecyclePermit(gpsLifecyclePermit, binder, method)
+
+internal fun LocationHooker.colorOsGpsDemand(required: Boolean) = synchronized(colorOsGpsSession) {
+    if (!retiringGeneration) {
+        colorOsGpsSession.updateDemand(required, SystemClock.elapsedRealtimeNanos())?.let { queueGpsLifecycle(it) }
+    }
+}
+
+internal fun currentColorOsGpsEpoch(): GpsProductionSession.Epoch? = colorOsGpsSession.pendingFirstFix()
+internal fun needsColorOsGpsFixObservation(): Boolean = colorOsGpsSession.needsFixObservation()
+internal fun missColorOsGpsAdmission(epoch: GpsProductionSession.Epoch?) = colorOsGpsSession.missAdmission(epoch)
+
+internal fun LocationHooker.acceptColorOsGpsFix(
+    expected: GpsProductionSession.Epoch?, elapsedNs: Long, source: GpsProductionSession.Source
+) = synchronized(colorOsGpsSession) {
+    if (!retiringGeneration) colorOsGpsSession.acceptFirstFix(expected, elapsedNs, source)?.let { queueGpsLifecycle(it) }
+    Unit
+}
+
+/** Called under the session lock to order the posts. No reflection, PM lookup or IPC here. */
+private fun LocationHooker.queueGpsLifecycle(event: GpsProductionSession.Event) {
+    val native = nativeSignalGate?.entries(false).orEmpty()
+    val recipients = activeGnssStatusBinders.mapNotNull { (binder, record) ->
+        val registration = native[binder]
+        if (record.accepted && record.acceptedAtElapsedNs <= event.elapsedNs && registration?.active == true)
+            GpsLifecycleRecipient(binder, record.registrationIdentity, registration.registrationIdentity)
+        else null
+    }
+    colorOsGpsSession.enqueue(event, recipients)
+    postGpsLifecycle()
+}
+
+private fun LocationHooker.postGpsLifecycle() {
+    gpsLifecycleHandler.post { deliverGpsLifecycle() }
+}
+
+private fun LocationHooker.deliverGpsLifecycle() {
+    while (!retiringGeneration) {
+        val delivery = colorOsGpsSession.nextDelivery() ?: return
+        val config = readConfig()
+        val native = nativeSignalGate?.entries(false).orEmpty()
+        val eligible = delivery.recipients.mapNotNull { recipient ->
+            val record = activeGnssStatusBinders[recipient.binder] ?: return@mapNotNull null
+            val registration = native[recipient.binder] ?: return@mapNotNull null
+            val allowed = runCatching {
+                record.registrationIdentity === recipient.registrationIdentity && record.accepted &&
+                    recipient.binder.isBinderAlive && registration.active &&
+                    registration.registrationIdentity === recipient.frameworkIdentity &&
+                    config != null && registeredPackageEnabled(config, record.packageName)
+            }.getOrDefault(false)
+            if (allowed) recipient to record else null
+        }
+        val recipients = synchronized(colorOsGpsSession) {
+            if (retiringGeneration) return
+            if (readConfig() !== config) {
+                postGpsLifecycle()
+                return
+            }
+            val latest = nativeSignalGate?.entries(false).orEmpty()
+            val selected = eligible.mapNotNull { (recipient, record) ->
+                val registration = latest[recipient.binder]
+                if (activeGnssStatusBinders[recipient.binder] === record && registration?.active == true &&
+                    registration.registrationIdentity === recipient.frameworkIdentity) {
+                    recipient.binder to record.listener
+                } else null
+            }
+            if (!colorOsGpsSession.claim(delivery)) return
+            selected
+        }
+        val event = delivery.event
+        val claimIdentity = Any()
+        val method = when (event.kind) {
+            GpsProductionSession.Kind.STARTED -> "onGnssStarted"
+            GpsProductionSession.Kind.FIRST_FIX -> "onFirstFix"
+            GpsProductionSession.Kind.STOPPED -> "onGnssStopped"
+        }
+        val args = if (event.kind == GpsProductionSession.Kind.FIRST_FIX) arrayOf<Any>(event.ttffMs) else emptyArray()
+        val name = event.kind.name.lowercase()
+        HookStatus.workEventAndRequestSnapshot("gnss_gps_$name")
+        Log.i("LocationSpoofer", "GPS production $name start_elapsed_ns=${event.startElapsedNs} " +
+            "event_elapsed_ns=${event.elapsedNs} source=${event.source} ttff_ms=${args.firstOrNull()}")
+        for ((binder, listener) in recipients) runCatching {
+            if (!binder.isBinderAlive) return@runCatching
+            withGpsLifecyclePermit(gpsLifecyclePermit, binder, method, claimIdentity) {
+                listener.javaClass.methods.firstOrNull { it.name == method && it.parameterCount == args.size }
+                    ?.invoke(listener, *args)
+            }
+        }
+    }
+}
 
 // 存储当前活跃的目标应用 IGnssNmeaListener 映射
 private data class GnssNmeaRegistrationInfo(
@@ -150,6 +255,7 @@ private fun LocationHooker.hookSignalDelivery(listener: Any, nmea: Boolean) {
     for (name in methods) runCatching {
         XposedHelpers.hookAllMethods(type, name) { chain, _ ->
             val recipient = (chain.thisObject as? IInterface)?.asBinder() ?: chain.thisObject as? IBinder
+            if (!nmea && claimedGpsLifecycleDelivery(recipient, name)) return@hookAllMethods chain.proceed(chain.args.toTypedArray())
             if (retiringGeneration && recipient in retiringSignalBinders) return@hookAllMethods null
             if (!syntheticSignalDelivery.get()) {
                 val binder = (chain.thisObject as? IInterface)?.asBinder() ?: chain.thisObject as? IBinder
@@ -206,7 +312,10 @@ private fun LocationHooker.registerSignalCallback(chain: XposedInterface.Chain, 
     }
     val result = try { chain.proceed(args) } catch (error: Throwable) { rollback(); throw error }
     if (result == false) { rollback(); return result }
-    if (nmea) nmeaInfo.accepted = true else gnssInfo.accepted = true
+    if (nmea) nmeaInfo.accepted = true else {
+        gnssInfo.acceptedAtElapsedNs = SystemClock.elapsedRealtimeNanos()
+        gnssInfo.accepted = true
+    }
     nativeSignalGate?.refresh(chain.thisObject)
     locationDemandChanged?.invoke()
     runCatching {
@@ -265,28 +374,74 @@ private fun NativeRegistrationAttempt.trackPendingIntent(pendingIntent: android.
 private var isHeartbeatTimerStarted = false
 
 /** Flatten module-defined registrations into bootstrap arrays before handing them to new code. */
-internal fun saveSystemLocationReloadState(): Array<Any> = arrayOf(
-    activeListenerBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
-        val info = entry.value
-        arrayOf<Any>(binder, info.listener, info.packageName, info.provider, info.registeredTime)
-    },
-    activeGnssStatusBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
-        arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime, info.started)
-    },
-    activeGnssNmeaBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
-        arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime)
-    },
-    activeCallbackBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
-        val info = entry.value
-        arrayOf<Any>(binder, info.callback, info.packageName, info.registeredTime)
-    },
-    activePendingIntents.mapTo(java.util.ArrayList()) { (pendingIntent, entry) ->
-        arrayOf<Any>(pendingIntent, entry.value)
-    },
-    rawGnssDelivery?.save() ?: emptyList<Array<Any>>()
-)
+internal fun saveSystemLocationReloadState(): Array<Any> {
+    val gpsHandoff = saveGpsLifecycleHandoff()
+    val statusRegistrations = nativeSignalGate?.entries(false).orEmpty()
+    return arrayOf(
+        activeListenerBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
+            val info = entry.value
+            arrayOf<Any>(binder, info.listener, info.packageName, info.provider, info.registeredTime)
+        },
+        activeGnssStatusBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
+            arrayOf(binder, info.listener, info.packageName, info.registeredTime, info.started,
+                info.acceptedAtElapsedNs, info.registrationIdentity, statusRegistrations[binder]?.registrationIdentity)
+        },
+        activeGnssNmeaBinders.filterValues { it.accepted }.mapTo(java.util.ArrayList()) { (binder, info) ->
+            arrayOf<Any>(binder, info.listener, info.packageName, info.registeredTime)
+        },
+        activeCallbackBinders.mapTo(java.util.ArrayList()) { (binder, entry) ->
+            val info = entry.value
+            arrayOf<Any>(binder, info.callback, info.packageName, info.registeredTime)
+        },
+        activePendingIntents.mapTo(java.util.ArrayList()) { (pendingIntent, entry) ->
+            arrayOf<Any>(pendingIntent, entry.value)
+        },
+        rawGnssDelivery?.save() ?: emptyList<Array<Any>>(),
+        gpsHandoff
+    )
+}
+
+private fun saveGpsLifecycleHandoff(): Array<Any> {
+    val handoff = colorOsGpsSession.pauseForReload()
+    val queue = handoff.unclaimed.mapTo(ArrayList()) { delivery ->
+        val event = delivery.event
+        arrayOf<Any>(event.kind.name, event.startElapsedNs, event.elapsedNs, event.source?.name.orEmpty(),
+            delivery.recipients.mapTo(ArrayList()) { arrayOf(it.binder, it.registrationIdentity, it.frameworkIdentity) })
+    }
+    return arrayOf(handoff.clock, queue, gpsLifecyclePermit)
+}
+
+internal fun restoreColorOsGpsSession(value: Any?) {
+    val handoff = ((value as? Array<*>)?.getOrNull(6)) as? Array<*>
+    @Suppress("UNCHECKED_CAST")
+    val permit = handoff?.getOrNull(2) as? ThreadLocal<Array<Any>>
+    if (permit != null) gpsLifecyclePermit = permit
+    val queued = (handoff?.getOrNull(1) as? List<*>).orEmpty().mapNotNull { element ->
+        val row = element as? Array<*> ?: return@mapNotNull null
+        val kind = GpsProductionSession.Kind.entries.firstOrNull { it.name == row.getOrNull(0) } ?: return@mapNotNull null
+        val start = row.getOrNull(1) as? Long ?: return@mapNotNull null
+        val time = row.getOrNull(2) as? Long ?: return@mapNotNull null
+        val source = GpsProductionSession.Source.entries.firstOrNull { it.name == row.getOrNull(3) }
+        val recipients = (row.getOrNull(4) as? List<*>).orEmpty().mapNotNull recipients@{ item ->
+            val target = item as? Array<*> ?: return@recipients null
+            val binder = target.getOrNull(0) as? IBinder ?: return@recipients null
+            val identity = target.getOrNull(1) ?: return@recipients null
+            val nativeIdentity = target.getOrNull(2) ?: return@recipients null
+            GpsLifecycleRecipient(binder, identity, nativeIdentity)
+        }
+        GpsProductionSession.Delivery(GpsProductionSession.Event(kind, start, time, source), recipients)
+    }
+    colorOsGpsSession.restore(handoff?.getOrNull(0) ?: longArrayOf(), queued, pause = true)
+}
+
+internal fun LocationHooker.resumeColorOsGpsSessionAfterReload() {
+    colorOsGpsSession.cancelReload()
+    if (colorOsGpsSession.nextDelivery() != null) postGpsLifecycle()
+    vendorExtraHooks.filterIsInstance<ColorOs16LocationDelivery>().forEach { it.refreshProductionDemandAfterReload() }
+}
 
 internal fun clearSystemLocationReloadState() {
+    colorOsGpsSession.close()
     locationDemandChanged = null
     nativeSignalGate?.close()
     nativeSignalGate = null
@@ -320,7 +475,14 @@ internal fun LocationHooker.restoreSystemLocationReloadState(value: Any?) {
     rows(1).forEach { row ->
         val binder = row[0] as IBinder
         if (!binder.isBinderAlive) return@forEach
-        activeGnssStatusBinders[binder] = GnssStatusRegistrationInfo(row[1]!!, row[2] as String, row[3] as Long, row.getOrNull(4) as? Boolean ?: true)
+        val frameworkIdentity = row.getOrNull(7)
+        if (frameworkIdentity != null && nativeSignalGate?.entries(false)?.get(binder)?.registrationIdentity !== frameworkIdentity) {
+            return@forEach
+        }
+        activeGnssStatusBinders[binder] = GnssStatusRegistrationInfo(row[1]!!, row[2] as String, row[3] as Long,
+            row.getOrNull(4) as? Boolean ?: true,
+            acceptedAtElapsedNs = row.getOrNull(5) as? Long ?: SystemClock.elapsedRealtimeNanos(),
+            registrationIdentity = row.getOrNull(6) ?: Any())
         hookSignalDelivery(row[1]!!, false)
         deliveryHandoff?.release(row[1]!!)
     }
@@ -571,7 +733,7 @@ private fun LocationHooker.dispatchSyntheticGnssStatus(listener: Any, gnssStatus
     // 确保 GNSS 引擎启动状态已告知客户端
     val binder = (listener as? IInterface)?.asBinder() ?: listener as? IBinder
     val info = binder?.let { activeGnssStatusBinders[it] }
-    val start = if (info != null) synchronized(info) {
+    val start = if (info != null && !usesMeasuredColorOsGpsLifecycle()) synchronized(info) {
         if (info.started) false else { info.started = true; true }
     } else false
     if (start) {
