@@ -27,11 +27,7 @@ internal class NativeSignalGate(
     private val handler = Handler(Looper.getMainLooper())
     private val queued = AtomicBoolean()
     private val hooks = mutableListOf<XposedInterface.HookHandle>()
-    @Volatile private var closed = false
-    @Volatile private var statuses: Map<IBinder, NativeSignalRegistration> = emptyMap()
-    @Volatile private var nmeas: Map<IBinder, NativeSignalRegistration> = emptyMap()
-    private var statusProvider: Any? = null
-    private var nmeaProvider: Any? = null
+    private val snapshots = NativeSignalSnapshots<IBinder, NativeSignalRegistration>()
     private lateinit var statusType: Class<*>
     private lateinit var nmeaType: Class<*>
     private lateinit var registrations: Field
@@ -40,9 +36,9 @@ internal class NativeSignalGate(
     private lateinit var active: Method
     private val notifyTask = Runnable {
         queued.set(false)
-        if (!closed && !module.retiringGeneration) {
+        if (!snapshots.closed && !module.retiringGeneration) {
             refresh()
-            changed()
+            if (!snapshots.closed && !module.retiringGeneration) changed()
         }
     }
 
@@ -63,13 +59,12 @@ internal class NativeSignalGate(
         hooks += XposedHelpers.hookAllMethods(multiplexer, event.name) { chain, hooked ->
             val result = chain.proceed(chain.args.toTypedArray())
             val owner = chain.thisObject
-            if (hooked == event && !closed && owner != null &&
+            if (hooked == event && !snapshots.closed && owner != null &&
                 (statusType.isInstance(owner) || nmeaType.isInstance(owner))) {
                 // The framework already holds this reentrant lock. Publish only immutable
                 // native state here; target/PackageManager checks run after releasing it.
                 try { refreshProvider(owner) }
                 catch (error: Throwable) {
-                    if (statusType.isInstance(owner)) statuses = emptyMap() else nmeas = emptyMap()
                     HookStatus.error("GNSS native registration event", error)
                 }
                 HookStatus.workTick("gnss_native_registration_event")
@@ -88,30 +83,29 @@ internal class NativeSignalGate(
 
     /** Also called after registration and once on hot reload, never from an output timer. */
     fun refresh(service: Any? = null) {
-        if (closed || !::registrations.isInitialized) return
+        if (snapshots.closed || !::registrations.isInitialized) return
         try {
             val owner = service ?: Class.forName("android.os.ServiceManager")
                 .getDeclaredMethod("getService", String::class.java).invoke(null, "location") ?: return
             val manager = field(owner.javaClass, "mGnssManagerService").get(owner) ?: return
-            statusProvider = field(manager.javaClass, "mGnssStatusProvider").get(manager)
-            nmeaProvider = field(manager.javaClass, "mGnssNmeaProvider").get(manager)
+            val statusProvider = field(manager.javaClass, "mGnssStatusProvider").get(manager)
+            val nmeaProvider = field(manager.javaClass, "mGnssNmeaProvider").get(manager)
             statusProvider?.let(::refreshProvider)
             nmeaProvider?.let(::refreshProvider)
         } catch (error: Throwable) {
-            statuses = emptyMap()
-            nmeas = emptyMap()
+            snapshots.clear()
             HookStatus.error("GNSS native registration snapshot", error)
         }
     }
 
     fun allows(binder: IBinder, nmea: Boolean): Boolean =
-        !closed && (if (nmea) nmeas else statuses)[binder]?.active == true
+        entries(nmea)[binder]?.active == true
 
     fun entries(nmea: Boolean): Map<IBinder, NativeSignalRegistration> =
-        if (closed) emptyMap() else if (nmea) nmeas else statuses
+        snapshots.entries(nmea)
 
     private fun refreshProvider(provider: Any) {
-        val snapshot = synchronized(lock.get(provider)) {
+        snapshots.refresh(lock.get(provider), nmeaType.isInstance(provider)) {
             (registrations.get(provider) as Map<*, *>).entries.mapNotNull { (key, value) ->
                 if (key !is IBinder || value == null) return@mapNotNull null
                 val listener = listenerField.get(value) ?: return@mapNotNull null
@@ -122,18 +116,13 @@ internal class NativeSignalGate(
                     active.invoke(value) == true, value)
             }.toMap()
         }
-        if (statusType.isInstance(provider)) statuses = snapshot else nmeas = snapshot
     }
 
     override fun close() {
-        closed = true
+        snapshots.close()
         handler.removeCallbacks(notifyTask)
         hooks.asReversed().forEach { runCatching { it.unhook() } }
         hooks.clear()
-        statuses = emptyMap()
-        nmeas = emptyMap()
-        statusProvider = null
-        nmeaProvider = null
     }
 
     private fun field(type: Class<*>, name: String): Field {
