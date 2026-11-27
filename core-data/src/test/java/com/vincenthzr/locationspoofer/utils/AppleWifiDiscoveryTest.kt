@@ -5,6 +5,7 @@ import com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng
 import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -45,7 +46,7 @@ class AppleWifiWlocCodecTest {
     }
 
     @Test fun usesCanonicalBssidStringsAndBoundsTheRequestBatch() {
-        val request = AppleWifiWlocCodec.request(listOf(" A:B:C:D:E:F "))
+        val request = AppleWifiWlocCodec.request(listOf(" A:B:C:D:E:F ")).bytes
         assertTrue(request.toString(Charsets.ISO_8859_1).contains("0a:0b:0c:0d:0e:0f"))
         assertThrows(IllegalArgumentException::class.java) { AppleWifiWlocCodec.request((1..7).map(::mac)) }
         assertThrows(IllegalArgumentException::class.java) { AppleWifiWlocCodec.request(emptyList()) }
@@ -71,6 +72,70 @@ class AppleWifiWlocCodecTest {
         assertEquals(11, result.appleWlocChannel)
         assertEquals(11, result.reportedChannel)
         assertNull(result.metadata)
+        assertNull(result.effectiveFrequencyMHz)
+    }
+
+    @Test fun onlyNeighborsWithValidChannelsInAnExplicitBandResponseGainFrequency() {
+        var response = ByteArray(10) +
+            wifiWire("2:0:0:0:0:1", TEST_LAT, TEST_LON, channelWire(11)) +
+            wifiWire(mac(2), TEST_LAT, TEST_LON, channelWire(36)) +
+            wifiWire(mac(3), TEST_LAT, TEST_LON, channelWire(6)) +
+            wifiWire(mac(4), TEST_LAT, TEST_LON, channelWire(14)) +
+            wifiWire(mac(5), TEST_LAT, TEST_LON, channelWire(0)) +
+            wifiWire(mac(6), -180.0, -180.0, channelWire(11)) +
+            wifiWire(mac(7), TEST_LAT, TEST_LON, channelWire(11) + channelWire(6)) +
+            wifiWire(mac(8), TEST_LAT, TEST_LON, channelWire(1)) +
+            wifiWire(mac(8), TEST_LAT + 0.0001, TEST_LON, channelWire(11)) +
+            wifiWire(mac(8), TEST_LAT + 0.0002, TEST_LON, channelWire(1))
+        val sent = Buffer()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            checkNotNull(chain.request().body).writeTo(sent)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("fixture")
+                .body(response.toResponseBody()).build()
+        }.build()
+        try {
+            val client = AppleWifiWlocClient(http)
+            val seeds = listOf(" 2-0-0-0-0-1 ", "020000000002")
+            val points = runBlocking { client.query(seeds, TEST_LAT, TEST_LON, RemoteWifiRegion.MAINLAND_CHINA) }
+                .associateBy { it.bssid }
+            assertEquals((listOf(1, 2, 3, 4, 5, 7, 8)).map(::mac).toSet(), points.keys)
+            assertEquals(2437, points.getValue(mac(3)).appleWlocDerivedFrequencyMHz)
+            assertEquals(2484, points.getValue(mac(4)).effectiveFrequencyMHz)
+            assertNull(points.getValue(mac(1)).effectiveFrequencyMHz)
+            assertNull(points.getValue(mac(2)).effectiveFrequencyMHz)
+            assertNull(points.getValue(mac(5)).effectiveFrequencyMHz)
+            assertEquals(6, points.getValue(mac(7)).appleWlocChannel)
+            assertEquals(1, points.getValue(mac(8)).appleWlocChannel)
+            assertNull(points.getValue(mac(7)).effectiveFrequencyMHz)
+            assertNull(points.getValue(mac(8)).effectiveFrequencyMHz)
+            val expandedBand = listOf(0xf8.toByte(), 0x01.toByte(), 0x01.toByte())
+            assertEquals(1, sent.readByteArray().toList().windowed(3).count { it == expandedBand })
+            val global = runBlocking { client.query(seeds, TEST_LAT, TEST_LON, RemoteWifiRegion.GLOBAL) }
+            assertEquals(points.keys, global.map { it.bssid }.toSet())
+            assertTrue(global.all { it.appleWlocDerivedFrequencyMHz == null })
+            assertFalse(sent.readByteArray().toList().windowed(3).any { it == expandedBand })
+            response += wifiWire(mac(9), TEST_LAT, TEST_LON, channelWire(36))
+            val contradicted = runBlocking { client.query(seeds, TEST_LAT, TEST_LON, RemoteWifiRegion.MAINLAND_CHINA) }
+                .associateBy { it.bssid }
+            assertEquals(6, contradicted.getValue(mac(3)).appleWlocChannel)
+            assertEquals(36, contradicted.getValue(mac(9)).appleWlocChannel)
+            assertTrue(contradicted.values.all { it.appleWlocDerivedFrequencyMHz == null })
+        } finally {
+            http.dispatcher.executorService.shutdown()
+            http.connectionPool.evictAll()
+        }
+    }
+
+    @Test fun keepsDerivedFrequencySeparateFromAnExplicitWigleChannel() {
+        val neighbor = point(4, 100.0).copy(appleWlocChannel = 11, appleWlocDerivedFrequencyMHz = 2462)
+        val descriptionOnly = neighbor.copy(metadata = RemoteWifiMetadata(ssid = "fixture", fetchedAt = 1L))
+        assertEquals(2462, descriptionOnly.effectiveFrequencyMHz)
+        val channelOnly = neighbor.copy(metadata = RemoteWifiMetadata(channel = 36, fetchedAt = 1L))
+        assertEquals(36, channelOnly.reportedChannel)
+        assertNull(channelOnly.effectiveFrequencyMHz)
+        val explicitFrequency = channelOnly.copy(metadata = channelOnly.metadata?.copy(frequencyMHz = 5180))
+        assertEquals(5180, explicitFrequency.effectiveFrequencyMHz)
+        assertEquals(2462, explicitFrequency.appleWlocDerivedFrequencyMHz)
     }
 
     @Test fun doesNotBorrowAChannelFromAnInconsistentDuplicatePosition() {
@@ -137,7 +202,9 @@ class AppleWifiDiscoveryTest {
         val discovery = AppleWifiDiscovery(policy = oneTile, localSeeds = { _, _ -> listOf(mac(1)) },
             tileLookup = { _, _, _, _, _ -> emptyList() },
             wlocLookup = { seeds, _, _, _, _ ->
-                if (seeds == listOf(mac(1))) listOf(point(2, earlierDistance).copy(appleWlocChannel = 6))
+                if (seeds == listOf(mac(1))) listOf(point(2, earlierDistance).copy(
+                    appleWlocChannel = 6, appleWlocDerivedFrequencyMHz = 2437
+                ))
                 else {
                     assertEquals(listOf(mac(2)), seeds)
                     listOf(nearby)
@@ -149,12 +216,18 @@ class AppleWifiDiscoveryTest {
     }
 
     @Test fun repeatedWlocLookupKeepsKnownChannelWhenNewerPositionOmitsIt() {
-        assertEquals(6, repeatWlocLookup(310.0, point(2, 100.0)).appleWlocChannel)
+        val retained = repeatWlocLookup(310.0, point(2, 100.0))
+        assertEquals(6, retained.appleWlocChannel)
+        assertEquals(2437, retained.appleWlocDerivedFrequencyMHz)
     }
 
     @Test fun repeatedWlocLookupKeepsMovedRecordsUnknownAndPrefersANewReportedChannel() {
-        assertNull(repeatWlocLookup(1_000.0, point(2, 100.0)).appleWlocChannel)
-        assertEquals(11, repeatWlocLookup(310.0, point(2, 100.0).copy(appleWlocChannel = 11)).appleWlocChannel)
+        val moved = repeatWlocLookup(1_000.0, point(2, 100.0))
+        assertNull(moved.appleWlocChannel)
+        assertNull(moved.appleWlocDerivedFrequencyMHz)
+        val changed = repeatWlocLookup(310.0, point(2, 100.0).copy(appleWlocChannel = 11))
+        assertEquals(11, changed.appleWlocChannel)
+        assertNull(changed.appleWlocDerivedFrequencyMHz)
     }
 
     @Test fun aSeedSeenInABatchCanStillBeRefinedWithOneIndividualRequest() {

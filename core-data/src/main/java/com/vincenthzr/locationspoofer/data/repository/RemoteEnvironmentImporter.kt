@@ -4,28 +4,59 @@ import androidx.room.withTransaction
 import com.vincenthzr.locationspoofer.data.db.*
 import com.vincenthzr.locationspoofer.data.model.*
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils
+import com.vincenthzr.locationspoofer.utils.GeoMath
 import com.vincenthzr.locationspoofer.utils.RemoteSignalModel
+import com.vincenthzr.locationspoofer.utils.WifiBssid
 
 /** Imports an explicitly selected lookup into the existing environment pipeline, without activating simulation. */
 class RemoteEnvironmentImporter(private val database: AppDatabase) {
     suspend fun importWifi(snapshot: RemoteWifiSnapshot): Long = database.withTransaction {
-        require(snapshot.points.isNotEmpty())
+        require(snapshot.points.size in 1..100)
+        val points = snapshot.points.associateBy { requireNotNull(WifiBssid.normalize(it.bssid)) }
         val dao = database.environmentDao()
         val id = location(snapshot.latitude, snapshot.longitude, snapshot.fetchedAt)
-        val existing = checkNotNull(dao.getCompleteLocationById(id)).wifis.map { it.device.bssid }.toSet()
-        val known = dao.getWifiDevices(snapshot.points.map { it.bssid }).associateBy { it.bssid }
-        snapshot.points.forEach { point ->
-            val original = known[point.bssid]
+        val saved = checkNotNull(dao.getCompleteLocationById(id))
+        val target = CoordinateUtils.wgs84ToGcj02(snapshot.latitude, snapshot.longitude)
+        val samePoint = GeoMath.distance(target, CoordinateUtils.LatLng(saved.location.lat, saved.location.lng)) <= 2.0
+        val protectedBssids = listOfNotNull(saved.location.selectedWifiBssid, saved.connectedWifi?.bssid)
+            .mapNotNull(WifiBssid::normalize).toSet()
+        val existing = saved.wifis.groupBy { WifiBssid.normalize(it.device.bssid) }
+        val known = dao.getWifiDevicesIgnoringCase(points.keys.toList()).groupBy { WifiBssid.normalize(it.bssid) }
+        fun isOwned(link: LocationWithWifi): Boolean {
+            val address = WifiBssid.normalize(link.device.bssid) ?: return false
+            return link.locationWifi.remoteSource == APPLE_WIFI_LINK_SOURCE && address !in protectedBssids
+        }
+        points.forEach { (bssid, point) ->
+            val links = existing[bssid].orEmpty()
+            val link = links.firstOrNull { !isOwned(it) } ?: links.firstOrNull()
+            val knownDevices = known[bssid].orEmpty()
+            val original = link?.device ?: knownDevices.firstOrNull { it.frequency > 0 } ?: knownDevices.firstOrNull()
             val metadata = point.metadata
+            val frequency = original?.frequency?.takeIf { it > 0 } ?: metadata?.frequencyMHz ?: 0
             val device = original?.copy(
                 ssid = original.ssid.ifEmpty { metadata?.ssid.orEmpty() },
-                frequency = original.frequency.takeIf { it > 0 } ?: metadata?.frequencyMHz ?: 0
-            ) ?: WifiDevice(point.bssid, ssid = metadata?.ssid.orEmpty(), frequency = metadata?.frequencyMHz ?: 0)
+                frequency = frequency
+            ) ?: WifiDevice(bssid, ssid = metadata?.ssid.orEmpty(), frequency = frequency)
             if (device != original) dao.insertWifiDevice(device)
-            if (point.bssid !in existing) {
-                dao.insertLocationWifi(LocationWifi(id, point.bssid, RemoteSignalModel.wifi(point.distanceMeters)))
+            val derivedFrequency = point.effectiveFrequencyMHz.takeIf { frequency == 0 }
+            val previous = link?.locationWifi
+            val updated = when {
+                previous == null -> LocationWifi(
+                    id, device.bssid, RemoteSignalModel.wifi(point.distanceMeters),
+                    derivedFrequency, APPLE_WIFI_LINK_SOURCE
+                )
+                !samePoint -> previous
+                isOwned(checkNotNull(link)) -> previous.copy(
+                    level = RemoteSignalModel.wifi(point.distanceMeters), appleWlocDerivedFrequencyMHz = derivedFrequency
+                )
+                else -> previous.copy(appleWlocDerivedFrequencyMHz = derivedFrequency)
             }
+            if (updated != previous) dao.insertLocationWifi(updated)
         }
+        if (samePoint) saved.wifis.asSequence().filter(::isOwned)
+            .filter { WifiBssid.normalize(it.device.bssid) !in points }
+            .map { it.device.bssid }.chunked(100)
+            .forEach { dao.deleteOwnedAppleWifiLinks(id, it) }
         id
     }
 

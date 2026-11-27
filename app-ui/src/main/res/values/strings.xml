@@ -526,6 +526,7 @@ Error details: %s</string>
     <string name="wifi_bssid_hint">e.g. AA:BB:CC:11:22:33</string>
     <string name="wifi_level_label">Signal Strength (RSSI: %1$d dBm)</string>
     <string name="wifi_freq_label">Frequency</string>
+    <string name="wifi_frequency_unknown">Unknown</string>
     <string name="wifi_capabilities_label">Capabilities</string>
     <string name="wifi_is_connected_label">Set as Connected Wi-Fi</string>
     <string name="designated_simulation_badge">Primary Mock</string>

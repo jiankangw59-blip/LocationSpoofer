@@ -3,6 +3,7 @@ package com.vincenthzr.locationspoofer.utils
 import com.vincenthzr.locationspoofer.data.model.MAX_REPORTED_WIFI_CHANNEL
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiPoint
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion
+import com.vincenthzr.locationspoofer.data.model.appleWloc24GhzFrequencyMHz
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils.LatLng
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
@@ -26,16 +27,25 @@ internal object WifiBssid {
     }
 }
 
-internal fun RemoteWifiPoint.withMissingAppleChannelFrom(other: RemoteWifiPoint?): RemoteWifiPoint {
+private fun RemoteWifiPoint.hasConsistentApplePosition(other: RemoteWifiPoint): Boolean =
+    GeoMath.distance(LatLng(latitude, longitude), LatLng(other.latitude, other.longitude)) <=
+        WIFI_METADATA_MAX_POSITION_DELTA_METERS
+
+internal fun RemoteWifiPoint.withMissingAppleRadioFrom(other: RemoteWifiPoint?): RemoteWifiPoint {
     val channel = other?.appleWlocChannel ?: return this
-    if (appleWlocChannel != null) return this
+    if (appleWlocChannel != null && appleWlocChannel != channel) return this
+    val frequency = appleWlocDerivedFrequencyMHz ?: other.appleWlocDerivedFrequencyMHz
+    if (appleWlocChannel == channel && appleWlocDerivedFrequencyMHz == frequency) return this
     // Callers provide the same canonical BSSID from this lookup.
-    val delta = GeoMath.distance(LatLng(latitude, longitude), LatLng(other.latitude, other.longitude))
-    return if (delta <= WIFI_METADATA_MAX_POSITION_DELTA_METERS) copy(appleWlocChannel = channel) else this
+    return if (hasConsistentApplePosition(other)) copy(
+        appleWlocChannel = channel, appleWlocDerivedFrequencyMHz = frequency
+    ) else this
 }
 
 /** Apple's reported AP positions and channels. The response provides neither freshness nor observed RSSI. */
 internal object AppleWifiWlocCodec {
+    class LookupRequest(val bytes: ByteArray, val seeds: Set<String>, val filters24GhzNeighbors: Boolean)
+
     private class Writer {
         private val output = ByteArrayOutputStream()
         private fun varint(value: Long) {
@@ -48,8 +58,8 @@ internal object AppleWifiWlocCodec {
         fun bytes(): ByteArray = output.toByteArray()
     }
 
-    fun request(bssids: List<String>): ByteArray {
-        val valid = bssids.map { requireNotNull(WifiBssid.normalize(it)) }.distinct()
+    fun request(bssids: List<String>, filter24GhzNeighbors: Boolean = false): LookupRequest {
+        val valid = bssids.map { requireNotNull(WifiBssid.normalize(it)) }.toSet()
         require(valid.size in 1..6)
         val device = Writer().apply {
             message(1, "iPhone OS17.5/21F79".toByteArray()); message(2, "iPhone12,1".toByteArray())
@@ -57,17 +67,21 @@ internal object AppleWifiWlocCodec {
         val payload = Writer().apply {
             valid.forEach { message(2, Writer().apply { message(1, it.toByteArray()) }.bytes()) }
             number(3, 0); number(4, 0); message(33, device)
+            if (filter24GhzNeighbors) number(31, 1)
         }.bytes()
         require(payload.size < 256)
         val prefix = "0001000a656e2d3030315f3030310013636f6d2e6170706c652e6c6f636174696f6e64000c31372e352e312e323146393000000001000000"
             .chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        return prefix + byteArrayOf(payload.size.toByte()) + payload
+        return LookupRequest(prefix + byteArrayOf(payload.size.toByte()) + payload, valid, filter24GhzNeighbors)
     }
 
-    fun decode(bytes: ByteArray, latitude: Double, longitude: Double, radiusMeters: Double): List<RemoteWifiPoint> {
+    fun decode(bytes: ByteArray, latitude: Double, longitude: Double, radiusMeters: Double,
+        request: LookupRequest? = null): List<RemoteWifiPoint> {
         require(bytes.size in 10..2_097_152 && radiusMeters.isFinite() && radiusMeters in 0.0..50_000.0)
         require(latitude.isFinite() && longitude.isFinite() && latitude in -90.0..90.0 && longitude in -180.0..180.0)
         val result = LinkedHashMap<String, RemoteWifiPoint>()
+        val conflictedFrequencyBssids = mutableSetOf<String>()
+        var responseContradictsBand = false
         val response = Reader(bytes.copyOfRange(10, bytes.size))
         while (response.more()) {
             val tag = response.number().toInt()
@@ -75,6 +89,8 @@ internal object AppleWifiWlocCodec {
             val device = Reader(response.bytes())
             var bssid: String? = null; var lat: Double? = null; var lon: Double? = null
             var channel: Int? = null
+            var conflictingChannel = false
+            var reportsOutside24Ghz = false
             while (device.more()) when (val field = device.number()) {
                 10L -> bssid = WifiBssid.normalize(device.bytes().toString(Charsets.UTF_8))
                 18L -> {
@@ -86,19 +102,37 @@ internal object AppleWifiWlocCodec {
                     }
                 }
                 // ALSWirelessAP.channel, field 21 with wire type 0.
-                168L -> channel = device.number()
-                    .takeIf { it in 1L..MAX_REPORTED_WIFI_CHANNEL.toLong() }?.toInt() ?: channel
+                168L -> device.number().takeIf { it in 1L..MAX_REPORTED_WIFI_CHANNEL.toLong() }?.toInt()?.let { reported ->
+                    if (channel != null && channel != reported) conflictingChannel = true
+                    if (appleWloc24GhzFrequencyMHz(reported) == null) reportsOutside24Ghz = true
+                    channel = reported
+                }
                 else -> device.skip((field and 7).toInt())
             }
-            val address = bssid ?: continue; val a = lat ?: continue; val b = lon ?: continue
+            val address = bssid ?: continue
+            // Apple can return the input seeds regardless of the requested neighbor band.
+            val filteredNeighbor = request?.filters24GhzNeighbors == true && address !in request.seeds
+            if (filteredNeighbor && reportsOutside24Ghz) responseContradictsBand = true
+            val a = lat ?: continue; val b = lon ?: continue
             if (a !in -90.0..90.0 || b !in -180.0..180.0) continue
             val distance = GeoMath.distance(LatLng(latitude, longitude), LatLng(a, b))
             if (!(distance <= radiusMeters)) continue
-            val point = RemoteWifiPoint(address, a, b, distance, appleWlocChannel = channel)
+            val frequency = if (filteredNeighbor) channel?.let(::appleWloc24GhzFrequencyMHz) else null
+            val point = RemoteWifiPoint(address, a, b, distance, appleWlocChannel = channel,
+                appleWlocDerivedFrequencyMHz = frequency)
             val first = result[address]
-            result[address] = first?.withMissingAppleChannelFrom(point) ?: point
+            if (request?.filters24GhzNeighbors == true) {
+                val differs = first?.appleWlocChannel != null && channel != null && first.appleWlocChannel != channel
+                if ((conflictingChannel || differs) && (first == null || first.hasConsistentApplePosition(point)))
+                    conflictedFrequencyBssids += address
+            }
+            result[address] = first?.withMissingAppleRadioFrom(point) ?: point
         }
-        return result.values.sortedBy { it.distanceMeters }.take(1000)
+        return result.values.sortedBy { it.distanceMeters }.take(1000).map {
+            if (it.appleWlocDerivedFrequencyMHz != null && (responseContradictsBand || it.bssid in conflictedFrequencyBssids))
+                it.copy(appleWlocDerivedFrequencyMHz = null)
+            else it
+        }
     }
 
     private class Reader(private val input: ByteArray) {
@@ -131,10 +165,11 @@ class AppleWifiWlocClient(private val client: OkHttpClient = OkHttpClient.Builde
     suspend fun query(bssids: List<String>, latitude: Double, longitude: Double, region: RemoteWifiRegion,
         radiusMeters: Double = 12_000.0): List<RemoteWifiPoint> {
         val host = if (region == RemoteWifiRegion.MAINLAND_CHINA) "gs-loc-cn.apple.com" else "gs-loc.apple.com"
+        val lookup = AppleWifiWlocCodec.request(bssids, filter24GhzNeighbors = region == RemoteWifiRegion.MAINLAND_CHINA)
         val request = Request.Builder().url("https://$host/clls/wloc")
             .header("User-Agent", "locationd/2890.16.16 CFNetwork/1496.0.7 Darwin/23.5.0")
             .header("Accept", "*/*").header("Accept-Charset", "utf-8").header("Accept-Language", "en-us")
-            .post(AppleWifiWlocCodec.request(bssids).toRequestBody("application/x-www-form-urlencoded".toMediaType())).build()
+            .post(lookup.bytes.toRequestBody("application/x-www-form-urlencoded".toMediaType())).build()
         val bytes = suspendCancellableCoroutine<ByteArray> { continuation ->
             val call = client.newCall(request); continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
@@ -160,7 +195,7 @@ class AppleWifiWlocClient(private val client: OkHttpClient = OkHttpClient.Builde
                 }
             })
         }
-        return try { AppleWifiWlocCodec.decode(bytes, latitude, longitude, radiusMeters) }
+        return try { AppleWifiWlocCodec.decode(bytes, latitude, longitude, radiusMeters, lookup) }
         catch (error: IllegalArgumentException) { throw RemoteWifiResponseException(error) }
         catch (error: IllegalStateException) { throw RemoteWifiResponseException(error) }
     }

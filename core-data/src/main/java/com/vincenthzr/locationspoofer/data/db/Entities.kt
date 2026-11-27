@@ -9,6 +9,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Embedded
 import androidx.room.Relation
 import com.vincenthzr.locationspoofer.data.model.SavedLocation
+import com.vincenthzr.locationspoofer.data.model.appleWloc24GhzFrequencyMHz
+import com.vincenthzr.locationspoofer.utils.WifiMetadataCodec
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -116,8 +118,12 @@ data class LocationConnectedWifi(
 data class LocationWifi(
     val locationId: Long = 0,
     val bssid: String,
-    val level: Int = -60
+    val level: Int = -60,
+    val appleWlocDerivedFrequencyMHz: Int? = null,
+    val remoteSource: String? = null
 )
+
+const val APPLE_WIFI_LINK_SOURCE = "APPLE"
 
 @Serializable
 @Entity(tableName = "bluetooth_devices")
@@ -209,7 +215,12 @@ data class LocationWithWifi(
     @Embedded val locationWifi: LocationWifi,
     @Relation(parentColumn = "bssid", entityColumn = "bssid")
     val device: WifiDevice
-)
+) {
+    val effectiveFrequencyMHz: Int
+        get() = device.frequency.takeIf { it > 0 } ?: locationWifi.appleWlocDerivedFrequencyMHz?.takeIf { frequency ->
+            WifiMetadataCodec.frequencyToChannel(frequency)?.let(::appleWloc24GhzFrequencyMHz) == frequency
+        } ?: 0
+}
 
 @Serializable
 data class LocationWithBluetooth(

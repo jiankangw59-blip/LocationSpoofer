@@ -2,6 +2,8 @@ package com.vincenthzr.locationspoofer.viewmodel
 
 import androidx.lifecycle.viewModelScope
 import com.vincenthzr.locationspoofer.data.db.LocationRecord
+import com.vincenthzr.locationspoofer.data.db.LocationWifi
+import com.vincenthzr.locationspoofer.data.db.WifiDevice
 import com.vincenthzr.locationspoofer.data.model.ImportExportCounts
 import com.vincenthzr.locationspoofer.data.model.ImportExportSelection
 import com.vincenthzr.locationspoofer.data.model.RoutePoint
@@ -56,43 +58,58 @@ internal suspend fun MainViewModel.saveEnvironmentData(
     try {
         val wifiObj = org.json.JSONObject(wifiJson)
         val isConnected = wifiObj.optBoolean("isConnected", false)
+        val nearbyArr = wifiObj.optJSONArray("nearbyWifi")
+        val prior = if (isConnected || nearbyArr != null) environmentDao.getCompleteLocationById(locId) else null
         if (isConnected && wifiObj.has("connectedWifi")) {
             val conn = wifiObj.getJSONObject("connectedWifi")
+            val bssid = conn.optString("bssid")
+            val stored = prior?.connectedWifi?.takeIf { it.bssid.equals(bssid, ignoreCase = true) }
             val connWifi = com.vincenthzr.locationspoofer.data.db.LocationConnectedWifi(
                 locationId = locId,
-                bssid = conn.optString("bssid"),
-                ssid = conn.optString("ssid"),
-                vendor = conn.optString("vendor"),
+                bssid = bssid,
+                ssid = conn.optString("ssid").ifBlank { stored?.ssid.orEmpty() },
+                vendor = conn.optString("vendor").ifBlank { stored?.vendor.orEmpty() },
                 macAddress = conn.optString("macAddress"),
-                frequency = conn.optInt("frequency"),
+                frequency = conn.optInt("frequency").takeIf { it > 0 } ?: stored?.frequency ?: 0,
                 linkSpeed = conn.optInt("linkSpeed"),
                 level = conn.optInt("level"),
-                capabilities = conn.optString("capabilities"),
+                capabilities = conn.optString("capabilities").ifBlank { stored?.capabilities.orEmpty() },
                 networkId = conn.optInt("networkId"),
                 wifiStandard = conn.optInt("wifiStandard")
             )
             environmentDao.insertConnectedWifi(connWifi)
         }
 
-        val nearbyArr = wifiObj.optJSONArray("nearbyWifi")
         if (nearbyArr != null) {
-            for (i in 0 until nearbyArr.length()) {
-                val obj = nearbyArr.getJSONObject(i)
-                val bssid = obj.optString("bssid")
-                if (bssid.isEmpty()) continue
+            val observations = (0 until nearbyArr.length()).map { nearbyArr.getJSONObject(it) }
+                .mapNotNull { item -> item.optString("bssid").trim().takeIf(String::isNotEmpty)?.let { it to item } }
+                .associateBy { (bssid, _) -> bssid.lowercase() }
+            val known = observations.keys.chunked(200).flatMap { environmentDao.getWifiDevicesIgnoringCase(it) }
+                .groupBy { it.bssid.lowercase() }
+            val linked = prior?.wifis.orEmpty().groupBy { it.device.bssid.lowercase() }
+            for ((canonical, observation) in observations) {
+                val (bssid, obj) = observation
+                val localLinks = linked[canonical].orEmpty()
+                val priorLink = localLinks.firstOrNull { it.locationWifi.remoteSource == null } ?: localLinks.firstOrNull()
+                val candidates = known[canonical].orEmpty()
+                val withFrequency = candidates.firstOrNull { it.frequency > 0 }
+                val stored = priorLink?.device ?: withFrequency ?: candidates.firstOrNull()
+                val storageBssid = stored?.bssid ?: bssid
+                val frequency = obj.optInt("frequency", 0).takeIf { it > 0 }
+                    ?: stored?.frequency?.takeIf { it > 0 } ?: withFrequency?.frequency ?: 0
                 environmentDao.insertWifiDevice(
-                    com.vincenthzr.locationspoofer.data.db.WifiDevice(
-                        bssid = bssid,
-                        ssid = obj.optString("ssid", ""),
-                        frequency = obj.optInt("frequency", 0),
-                        capabilities = obj.optString("capabilities", ""),
-                        vendor = obj.optString("vendor", "")
+                    WifiDevice(
+                        bssid = storageBssid,
+                        ssid = obj.optString("ssid").ifBlank { stored?.ssid.orEmpty() },
+                        frequency = frequency,
+                        capabilities = obj.optString("capabilities").ifBlank { stored?.capabilities.orEmpty() },
+                        vendor = obj.optString("vendor").ifBlank { stored?.vendor.orEmpty() }
                     )
                 )
                 environmentDao.insertLocationWifi(
-                    com.vincenthzr.locationspoofer.data.db.LocationWifi(
+                    LocationWifi(
                         locationId = locId,
-                        bssid = bssid,
+                        bssid = storageBssid,
                         level = obj.optInt("level", 0)
                     )
                 )
@@ -232,16 +249,17 @@ internal fun MainViewModel.locationToJson(
     val connectedObj = if (explicitWifiBssid == "__NONE__") {
         null
     } else if (explicitWifi != null) {
+        val frequency = explicitWifi.effectiveFrequencyMHz
         org.json.JSONObject().apply {
             put("ssid", explicitWifi.device.ssid)
             put("bssid", explicitWifi.device.bssid)
             put("vendor", explicitWifi.device.vendor)
             put("macAddress", explicitWifi.device.bssid)
-            put("frequency", explicitWifi.device.frequency)
+            put("frequency", frequency)
             put(
                 "channel",
                 com.vincenthzr.locationspoofer.utils.MacVendorHelper.frequencyToChannel(
-                    explicitWifi.device.frequency
+                    frequency
                 )
             )
             put("linkSpeed", 65)
@@ -279,7 +297,7 @@ internal fun MainViewModel.locationToJson(
 
     records.forEachIndexed { i, rec ->
         rec.wifis.forEach { rw ->
-            val bssid = rw.device.bssid
+            val bssid = rw.device.bssid.lowercase()
             if (!wifiMap.containsKey(bssid)) wifiMap[bssid] = rw
             wifiLevels[bssid] = (wifiLevels[bssid] ?: 0.0) + rw.locationWifi.level * weights[i]
             wifiWeights[bssid] = (wifiWeights[bssid] ?: 0.0) + weights[i]
@@ -290,14 +308,15 @@ internal fun MainViewModel.locationToJson(
     wifiMap.forEach { (bssid, rw) ->
         val w = wifiWeights[bssid]!!
         val interpolatedLevel = (wifiLevels[bssid]!! / w).toInt()
+        val frequency = rw.effectiveFrequencyMHz
         val obj = org.json.JSONObject().apply {
-            put("bssid", bssid)
+            put("bssid", rw.device.bssid)
             put("ssid", rw.device.ssid)
             put("vendor", rw.device.vendor)
-            put("frequency", rw.device.frequency)
+            put("frequency", frequency)
             put(
                 "channel",
-                com.vincenthzr.locationspoofer.utils.MacVendorHelper.frequencyToChannel(rw.device.frequency)
+                com.vincenthzr.locationspoofer.utils.MacVendorHelper.frequencyToChannel(frequency)
             )
             put("capabilities", rw.device.capabilities)
             put("level", interpolatedLevel)

@@ -4,6 +4,7 @@ import com.vincenthzr.locationspoofer.ui.BuildConfig
 import android.content.Context
 import java.util.Locale
 import androidx.lifecycle.viewModelScope
+import com.vincenthzr.locationspoofer.data.db.APPLE_WIFI_LINK_SOURCE
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.data.model.RoutePoint
 import com.vincenthzr.locationspoofer.utils.AltitudeModel
@@ -152,6 +153,13 @@ private suspend fun MainViewModel.mergeLegacyRecords() {
         // 选取时间戳最新的记录作为主记录
         val primary = group.maxByOrNull { it.location.timestamp } ?: continue
         val others = group.filter { it.location.id != primary.location.id }
+        val pinnedWifi = listOfNotNull(primary.location.selectedWifiBssid, primary.connectedWifi?.bssid).toSet()
+        val pinnedKeys = pinnedWifi.map { it.lowercase() }.toSet()
+        val wifiLinks = primary.wifis.map { it.locationWifi }.groupBy { it.bssid.lowercase() }
+            .mapValues { (_, links) -> links.firstOrNull { it.bssid in pinnedWifi }
+                ?: links.firstOrNull { it.remoteSource != APPLE_WIFI_LINK_SOURCE }
+                ?: links.first() }
+            .toMutableMap()
 
         for (other in others) {
             // 迁移已连接 Wi-Fi
@@ -160,7 +168,17 @@ private suspend fun MainViewModel.mergeLegacyRecords() {
             }
             // 迁移周围 Wi-Fi 列表
             other.wifis.forEach { lw ->
-                environmentDao.insertLocationWifi(lw.locationWifi.copy(locationId = primary.location.id))
+                val link = lw.locationWifi.copy(locationId = primary.location.id)
+                val canonical = link.bssid.lowercase()
+                val existing = wifiLinks[canonical]
+                if (existing == null || (canonical !in pinnedKeys && existing.remoteSource == APPLE_WIFI_LINK_SOURCE &&
+                        link.remoteSource != APPLE_WIFI_LINK_SOURCE)) {
+                    environmentDao.insertLocationWifi(link)
+                    if (existing != null && existing.bssid != link.bssid) {
+                        environmentDao.deleteLocationWifi(primary.location.id, existing.bssid)
+                    }
+                    wifiLinks[canonical] = link
+                }
             }
             // 迁移周边蓝牙列表
             other.bluetooths.forEach { lb ->

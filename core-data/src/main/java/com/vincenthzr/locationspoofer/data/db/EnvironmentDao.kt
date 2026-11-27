@@ -12,6 +12,9 @@ interface EnvironmentDao {
     @Query("SELECT * FROM wifi_devices WHERE bssid IN (:bssids)")
     suspend fun getWifiDevices(bssids: List<String>): List<WifiDevice>
 
+    @Query("SELECT * FROM wifi_devices WHERE LOWER(bssid) IN (:canonicalBssids) ORDER BY bssid")
+    suspend fun getWifiDevicesIgnoringCase(canonicalBssids: List<String>): List<WifiDevice>
+
     @Query("SELECT * FROM cell_devices WHERE cellKey = :key LIMIT 1")
     suspend fun getCellDevice(key: String): CellDevice?
 
@@ -178,6 +181,9 @@ interface EnvironmentDao {
 
     @Query("DELETE FROM location_wifi WHERE locationId = :locationId AND bssid = :bssid")
     suspend fun deleteLocationWifi(locationId: Long, bssid: String)
+
+    @Query("DELETE FROM location_wifi WHERE locationId = :locationId AND remoteSource = 'APPLE' AND bssid IN (:bssids)")
+    suspend fun deleteOwnedAppleWifiLinks(locationId: Long, bssids: List<String>)
 
     @Query("DELETE FROM location_connected_wifi WHERE locationId = :locationId")
     suspend fun deleteConnectedWifi(locationId: Long)

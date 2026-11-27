@@ -2,6 +2,7 @@ package com.vincenthzr.locationspoofer.data.repository
 
 import android.util.AtomicFile
 import com.vincenthzr.locationspoofer.data.model.MAX_REPORTED_WIFI_CHANNEL
+import com.vincenthzr.locationspoofer.data.model.appleWloc24GhzFrequencyMHz
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiPoint
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiSnapshot
@@ -122,6 +123,9 @@ class RemoteWifiRepository(
         val tileKey = AppleWifiTileCodec.tileKey(latitude, longitude)
         require(json.getLong("tile_key") == tileKey)
         val region = RemoteWifiRegion.valueOf(json.getString("region"))
+        val source = RemoteWifiSource.valueOf(json.optString("source_type", "APPLE_TILE"))
+        val restoresAppleDerivedFrequency = region == RemoteWifiRegion.MAINLAND_CHINA &&
+            source == RemoteWifiSource.APPLE_WLOC
         val fetchedAt = json.getLong("fetched_at")
         require(fetchedAt > 0)
         val array = json.getJSONArray("points")
@@ -152,14 +156,16 @@ class RemoteWifiRepository(
                     value.optLong("observed_at", 0).takeIf { it > 0 })
             } else null
             val appleWlocChannel = (entry.opt("apple_wloc_channel") as? Int)?.takeIf { it in 1..MAX_REPORTED_WIFI_CHANNEL }
-            RemoteWifiPoint(bssid, lat, lng, distance, metadata, appleWlocChannel)
+            val derivedFrequency = (entry.opt("apple_wloc_derived_frequency_mhz") as? Int)?.takeIf {
+                restoresAppleDerivedFrequency && it == appleWlocChannel?.let(::appleWloc24GhzFrequencyMHz)
+            }
+            RemoteWifiPoint(bssid, lat, lng, distance, metadata, appleWlocChannel, derivedFrequency)
         }
         val adopted = discovery?.let { lookup -> points.filter { it.distanceMeters <= lookup.adoptionRadiusMeters } } ?: points
         if (adopted.isEmpty()) return null
         return RemoteWifiSnapshot(latitude, longitude, region, tileKey, fetchedAt, adopted,
             RemoteWifiMetadataStatus.valueOf(json.optString("metadata_status", "NOT_REQUESTED")),
-            json.optInt("metadata_http_status", 0).takeIf { it in 100..599 },
-            RemoteWifiSource.valueOf(json.optString("source_type", "APPLE_TILE")))
+            json.optInt("metadata_http_status", 0).takeIf { it in 100..599 }, source)
     }
 
     private fun save(snapshot: RemoteWifiSnapshot) {
@@ -171,6 +177,7 @@ class RemoteWifiRepository(
                 put("longitude", point.longitude)
                 put("distance_meters", point.distanceMeters)
                 putOpt("apple_wloc_channel", point.appleWlocChannel)
+                putOpt("apple_wloc_derived_frequency_mhz", point.appleWlocDerivedFrequencyMHz)
                 point.metadata?.let { metadata ->
                     put("metadata", JSONObject().apply {
                         put("source", "WiGLE")

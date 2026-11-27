@@ -49,7 +49,7 @@ fun EditWifiDialog(
     var ssid by remember { mutableStateOf(initialItem?.ssid ?: "") }
     var bssid by remember { mutableStateOf(initialItem?.bssid ?: "") }
     var level by remember { mutableIntStateOf(initialItem?.level ?: -55) }
-    var frequency by remember { mutableIntStateOf(initialItem?.frequency ?: 5180) }
+    var frequency by remember { mutableIntStateOf(initialItem?.frequency ?: 0) }
     var capabilities by remember { mutableStateOf(initialItem?.capabilities ?: "[WPA2-PSK-CCMP][RSN]") }
     var vendor by remember { mutableStateOf(initialItem?.vendor ?: "") }
     var isConnected by remember { mutableStateOf(initialItem?.isConnected ?: false) }
@@ -260,7 +260,8 @@ fun EditWifiDialog(
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Text(
-                            text = stringResource(R.string.wifi_freq_label),
+                            text = stringResource(R.string.wifi_freq_label) + " · " +
+                                if (frequency > 0) "$frequency MHz" else stringResource(R.string.wifi_frequency_unknown),
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             fontWeight = FontWeight.Medium
@@ -271,7 +272,12 @@ fun EditWifiDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            listOf(2412 to "2.4G (2412)", 5180 to "5G (5180)", 5745 to "5.8G (5745)").forEach { (freq, lbl) ->
+                            listOf(
+                                0 to stringResource(R.string.wifi_frequency_unknown),
+                                2412 to "2412 MHz",
+                                5180 to "5180 MHz",
+                                5745 to "5745 MHz"
+                            ).forEach { (freq, lbl) ->
                                 val isChosen = frequency == freq
                                 Box(
                                     modifier = Modifier

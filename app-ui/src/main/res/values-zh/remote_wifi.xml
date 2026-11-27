@@ -18,7 +18,7 @@
     <string name="remote_wifi_result_center">查询坐标（WGS-84）%1$.7f, %2$.7f</string>
     <string name="remote_wifi_point_coordinates">WGS-84 %1$.7f, %2$.7f</string>
     <string name="remote_wifi_point_distance">距查询点 %1$.0f 米</string>
-    <string name="remote_wifi_missing_fields">Apple 提供 BSSID 和记录坐标，部分 WLOC 记录也会在此预览中显示信道。名称和频率使用匹配的 WiGLE 或已有采集数据。信号按距离估算，缺失字段保持未知。查询时间不表示设备当前在线。</string>
+    <string name="remote_wifi_missing_fields">Apple 提供 BSSID、记录坐标和部分信道。部分 WLOC 频率由请求的 2.4 GHz 频段和信道换算。优先使用匹配的 WiGLE 频率，导入时保留已有频率。信号按距离估算，缺失字段保持未知。查询时间不表示设备当前在线。</string>
     <string name="remote_wifi_error_coordinates">请输入有效数字，纬度范围为 −85.05112878 至 85.05112878，经度范围为 −180 至 180。</string>
     <string name="remote_wifi_error_no_coverage">本次有限查询未取得 300 米内的可用 Apple 记录；不代表该地区没有热点。</string>
     <string name="remote_wifi_error_limit">已达到查询预算，结果不完整。可稍后重试；不会采用远距离热点。</string>
@@ -56,6 +56,7 @@
     <string name="remote_wifi_frequency">%1$d MHz · 信道 %2$d</string>
     <string name="remote_wifi_channel_unknown_band">信道 %1$d · 频段未知</string>
     <string name="remote_wifi_apple_wloc_channel">Apple WLOC · 信道 %1$d · 频段未知</string>
+    <string name="remote_wifi_apple_wloc_derived_frequency">Apple WLOC · %1$d MHz（按 2.4 GHz 和信道 %2$d 换算）</string>
     <string name="remote_wifi_encryption">WiGLE 加密标注 %1$s</string>
     <string name="remote_wifi_metadata_time">WiGLE 查询于 %1$s</string>
     <string name="remote_environment_error_import">导入失败，原有数据保持不变，请重试。</string>

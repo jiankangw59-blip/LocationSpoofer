@@ -296,7 +296,13 @@ fun RemoteWifiQueryScreen(
                             Text(stringResource(R.string.remote_wifi_point_coordinates, point.latitude, point.longitude))
                             Text(stringResource(R.string.remote_wifi_point_distance, point.distanceMeters))
                             val wifiMetadata = point.metadata
-                            if (wifiMetadata?.channel == null && wifiMetadata?.frequencyMHz == null) {
+                            val appleChannel = point.appleWlocChannel
+                            val appleFrequency = point.appleWlocDerivedFrequencyMHz?.takeIf {
+                                wifiMetadata?.frequencyMHz == null && point.effectiveFrequencyMHz == it
+                            }
+                            if (appleFrequency != null && appleChannel != null) {
+                                Text(stringResource(R.string.remote_wifi_apple_wloc_derived_frequency, appleFrequency, appleChannel))
+                            } else if (wifiMetadata?.channel == null && wifiMetadata?.frequencyMHz == null) {
                                 point.reportedChannel?.let {
                                     Text(stringResource(R.string.remote_wifi_apple_wloc_channel, it))
                                 }
@@ -309,7 +315,9 @@ fun RemoteWifiQueryScreen(
                                 val frequency = metadata.frequencyMHz
                                 if (frequency != null) {
                                     Text(stringResource(R.string.remote_wifi_frequency, frequency, metadata.channel ?: 0))
-                                } else metadata.channel?.let { Text(stringResource(R.string.remote_wifi_channel_unknown_band, it)) }
+                                } else if (appleFrequency == null) {
+                                    metadata.channel?.let { Text(stringResource(R.string.remote_wifi_channel_unknown_band, it)) }
+                                }
                                 metadata.encryption?.let { Text(stringResource(R.string.remote_wifi_encryption, it), style = MaterialTheme.typography.bodySmall) }
                                 metadata.observedAt?.let {
                                     Text(stringResource(R.string.remote_wifi_metadata_observed,

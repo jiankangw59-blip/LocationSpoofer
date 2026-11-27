@@ -83,8 +83,15 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
         isDesignatedSimulation: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            val enteredBssid = bssid.trim()
+            val sameLocation = environmentDao.getCompleteLocationById(locationId)?.wifis.orEmpty()
+                .filter { it.device.bssid.equals(enteredBssid, ignoreCase = true) }
+            val existing = sameLocation.firstOrNull { it.locationWifi.remoteSource == null } ?: sameLocation.firstOrNull()
+            val storageBssid = existing?.device?.bssid
+                ?: environmentDao.getWifiDevicesIgnoringCase(listOf(enteredBssid.lowercase())).firstOrNull()?.bssid
+                ?: enteredBssid.uppercase()
             val device = com.vincenthzr.locationspoofer.data.db.WifiDevice(
-                bssid = bssid.uppercase().trim(),
+                bssid = storageBssid,
                 ssid = ssid.trim(),
                 frequency = frequency,
                 capabilities = capabilities.ifBlank { "[WPA2-PSK-CCMP][RSN]" },
@@ -94,7 +101,7 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
             environmentDao.insertLocationWifi(
                 com.vincenthzr.locationspoofer.data.db.LocationWifi(
                     locationId = locationId,
-                    bssid = bssid.uppercase().trim(),
+                    bssid = storageBssid,
                     level = level
                 )
             )
@@ -102,10 +109,10 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
             if (isConnected) {
                 val conn = com.vincenthzr.locationspoofer.data.db.LocationConnectedWifi(
                     locationId = locationId,
-                    bssid = bssid.uppercase().trim(),
+                    bssid = storageBssid,
                     ssid = ssid.trim(),
                     vendor = vendor,
-                    macAddress = bssid.uppercase().trim(),
+                    macAddress = storageBssid,
                     frequency = frequency,
                     linkSpeed = 65,
                     level = level,
@@ -117,7 +124,7 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
             }
 
             if (isDesignatedSimulation) {
-                environmentDao.updateSelectedWifi(locationId, bssid.uppercase().trim())
+                environmentDao.updateSelectedWifi(locationId, storageBssid)
             }
         }
     }

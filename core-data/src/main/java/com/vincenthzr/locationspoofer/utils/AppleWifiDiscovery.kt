@@ -115,7 +115,7 @@ class AppleWifiDiscovery(
                 val distance = GeoMath.distance(LatLng(latitude, longitude), LatLng(point.latitude, point.longitude))
                 if (distance <= policy.seedRadiusMeters) points[address] = point.copy(
                     bssid = address, distanceMeters = distance
-                ).withMissingAppleChannelFrom(points[address])
+                ).withMissingAppleRadioFrom(points[address])
             }
             if (points.size > 1000) {
                 val nearest = points.values.sortedBy { it.distanceMeters }.take(1000)

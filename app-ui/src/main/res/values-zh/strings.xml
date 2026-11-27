@@ -526,6 +526,7 @@
     <string name="wifi_bssid_hint">例如: AA:BB:CC:11:22:33</string>
     <string name="wifi_level_label">信号强度 (RSSI: %1$d dBm)</string>
     <string name="wifi_freq_label">工作频率 (Frequency)</string>
+    <string name="wifi_frequency_unknown">未知</string>
     <string name="wifi_capabilities_label">加密属性 (Capabilities)</string>
     <string name="wifi_is_connected_label">设为当前已连接 Wi-Fi</string>
     <string name="designated_simulation_badge">模拟首选</string>

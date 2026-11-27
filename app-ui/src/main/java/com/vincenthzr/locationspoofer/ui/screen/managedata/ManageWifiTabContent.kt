@@ -232,7 +232,8 @@ fun ManageWifiTabContent(
                                 Spacer(Modifier.height(3.dp))
 
                                 Text(
-                                    text = "${wifi.bssid}  •  ${wifi.level} dBm  •  ${wifi.frequency} MHz",
+                                    text = "${wifi.bssid}  •  ${wifi.level} dBm  •  " +
+                                        if (wifi.frequency > 0) "${wifi.frequency} MHz" else stringResource(R.string.wifi_frequency_unknown),
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                 )
