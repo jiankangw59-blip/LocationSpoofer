@@ -404,11 +404,11 @@ internal class ColorOs16LocationDelivery(
             val function = Class.forName("${manager.name}\$\$ExternalSyntheticLambda21", false, loader)
             check(Function::class.java.isAssignableFrom(function))
             val apply = function.getDeclaredMethod("apply", Any::class.java)
-            val reportedResult = function.getDeclaredField("f\$0").accessible()
+            val reportedResult = function.getDeclaredField("f\$0").apply { isAccessible = true }
             check(reportedResult.type == result)
             val admissions = listOf("LocationRegistration\$2", "GetCurrentLocationListenerRegistration\$1").associate { name ->
                 val type = Class.forName("${manager.name}\$$name", false, loader)
-                val payload = type.getDeclaredField("val\$locationResult").accessible()
+                val payload = type.getDeclaredField("val\$locationResult").apply { isAccessible = true }
                 check(payload.type == result && operation.returnType.isAssignableFrom(type))
                 type to payload
             }
