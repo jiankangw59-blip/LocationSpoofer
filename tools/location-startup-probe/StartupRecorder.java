@@ -110,11 +110,11 @@ final class StartupRecorder {
     void unobserve(Runnable observer) { if (this.observer == observer) this.observer = null; }
 
     void begin(String trigger, long owner, Stamp origin) {
-        begin(trigger, owner, origin, true, false, false);
+        begin(trigger, owner, origin, true, false, false, true);
     }
 
     void begin(String trigger, long owner, Stamp origin, boolean includeNmea, boolean includeGnssStatus,
-               boolean includeLateGnssStatus) {
+               boolean includeLateGnssStatus, boolean includeLocation) {
         if (!hasPermission()) return;
         if (owner != 0) declaredOwner = owner;
         Session active = current;
@@ -123,7 +123,7 @@ final class StartupRecorder {
             Session previous = current;
             if (previous != null && previous.running) finish(previous, "manual_restart", origin);
             startOnWorker(new Session(handler, trigger, owner, origin, includeNmea, includeGnssStatus,
-                includeLateGnssStatus), null);
+                includeLateGnssStatus, includeLocation), null);
         });
     }
 
@@ -137,7 +137,7 @@ final class StartupRecorder {
                 finish(session, "duration_elapsed", stamp);
             }
             if (session == null || !session.running) {
-                startOnWorker(new Session(handler, trigger, owner, stamp, true, false, false), event);
+                startOnWorker(new Session(handler, trigger, owner, stamp, true, false, false, true), event);
                 return;
             }
             if (session.owner != owner) {
@@ -162,12 +162,12 @@ final class StartupRecorder {
             session.observations.clear();
         }
         emit(session, event, stamp, json("focused", focused));
-        if (cache) {
+        if (cache && session.includeLocation) {
             Set<String> providers = state(session, event);
             registerAvailable(session, providers, event);
             readCache(session, providers, event, null, -1);
         }
-        if (firstFocus) session.focusBurst = startBurst(session, "window_focus", stamp.elapsedNs);
+        if (firstFocus && session.includeLocation) session.focusBurst = startBurst(session, "window_focus", stamp.elapsedNs);
         publish(session);
     }
 
@@ -249,6 +249,7 @@ final class StartupRecorder {
             "fine_permission", granted(Manifest.permission.ACCESS_FINE_LOCATION),
             "coarse_permission", granted(Manifest.permission.ACCESS_COARSE_LOCATION));
         if (session.primaryGnss != null) set(start, "gnss_status_requested", true);
+        if (!session.includeLocation) set(start, "location_collection_requested", false);
         if (session.lateGnss != null) {
             set(start, "late_gnss_status_requested", true);
             set(start, "late_gnss_status_delay_ms", LATE_GNSS_DELAY_NS / MS);
@@ -263,6 +264,12 @@ final class StartupRecorder {
         if (session.manager == null) {
             failure(session, "location_service", null, new IllegalStateException("Location service unavailable"));
             finish(session, "location_manager_unavailable", Stamp.now());
+            return;
+        }
+        if (!session.includeLocation) {
+            registerGnssStatus(session, session.primaryGnss);
+            retainReports(session, directory);
+            publish(session);
             return;
         }
         boolean readGpsEarly = switch (session.trigger) {
@@ -837,6 +844,7 @@ final class StartupRecorder {
             "observed_mode_broadcasts", session.modeBroadcasts, "missed_burst_slots", missedSlots(session),
             "coverage", coverage(session));
         if (session.primaryGnss != null) set(end, "gnss_status_capture", session.primaryGnss.summary());
+        if (!session.includeLocation) set(end, "location_detection_coverage", "NOT_COVERED");
         if (session.lateGnss != null) {
             GnssCapture late = session.lateGnss;
             String gap = lateGnssCoverageGap(session);
@@ -890,12 +898,16 @@ final class StartupRecorder {
 
     private static String coverage(Session session) {
         StringBuilder value = new StringBuilder();
-        if (session.registrationFailed || session.registrationCount == 0) value.append("注册覆盖不足；");
-        if (session.first == null) value.append("尚未观察到定位；");
-        if (session.firstCallbackNs < 0) value.append("未观察到普通监听回调；");
-        if (session.modeBroadcasts == 0) {
-            if (Boolean.TRUE.equals(session.initialLocationEnabled)) value.append("初始定位已开启，");
-            value.append("未观察到定位开关广播；");
+        if (session.includeLocation) {
+            if (session.registrationFailed || session.registrationCount == 0) value.append("注册覆盖不足；");
+            if (session.first == null) value.append("尚未观察到定位；");
+            if (session.firstCallbackNs < 0) value.append("未观察到普通监听回调；");
+            if (session.modeBroadcasts == 0) {
+                if (Boolean.TRUE.equals(session.initialLocationEnabled)) value.append("初始定位已开启，");
+                value.append("未观察到定位开关广播；");
+            }
+        } else {
+            value.append("仅采集 GNSS 状态，Location 未覆盖；");
         }
         if (session.firstFocusNs == 0) value.append("未观察到窗口获得焦点；");
         else if (session.firstFocusNs >= session.origin.elapsedNs + 2000 * MS) value.append("前 2 秒未观察到窗口焦点；");
@@ -1043,6 +1055,7 @@ final class StartupRecorder {
         final String trigger;
         final Stamp origin;
         final long deadline;
+        final boolean includeLocation;
         final boolean includeNmea;
         final GnssCapture primaryGnss;
         final GnssCapture lateGnss;
@@ -1090,11 +1103,12 @@ final class StartupRecorder {
         String fileError;
 
         Session(Handler handler, String trigger, long owner, Stamp origin, boolean includeNmea,
-                boolean includeGnssStatus, boolean includeLateGnssStatus) {
+                boolean includeGnssStatus, boolean includeLateGnssStatus, boolean includeLocation) {
             this.handler = handler;
             this.trigger = trigger;
             this.owner = owner;
             this.origin = origin;
+            this.includeLocation = includeLocation;
             this.includeNmea = includeNmea;
             this.primaryGnss = includeGnssStatus ? new GnssCapture("primary", "gnss_") : null;
             this.lateGnss = includeLateGnssStatus ? new GnssCapture("late", "late_gnss_") : null;

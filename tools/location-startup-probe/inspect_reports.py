@@ -26,6 +26,12 @@ END = "sdk_end_elapsed_ns"
 WINDOWS = (("0_200_ms", 0, 200 * MS), ("200_ms_2_s", 200 * MS, 2000 * MS),
            ("2_30_s", 2000 * MS, DURATION_NS))
 METRICS = ("cache_attempts", "cache_empty", "cache_errors", "cache", "callback", "current_location")
+STATUS_ONLY_EXCLUDED = {"location", "cache_empty", "current_location_empty", "current_location_request",
+                        "current_location_cancel", "listener_registration", "listener_removal", "listener_provider_state",
+                        "provider_state", "fused_provider_unavailable", "broadcast_registration", "broadcast_removal",
+                        "location_broadcast", "registration_checkpoint"}
+STATUS_ONLY_EXCLUDED_OPS = {"last_known", "request_location_updates", "get_current_location",
+                            "register_location_broadcasts", "all_providers", "location_enabled", "provider_enabled"}
 
 
 def integer(value):
@@ -287,6 +293,16 @@ def inspect_stream(source, path, issues=None):
 
     rows = read_jsonl(source, issue)
     start, end, accepted = valid_rows(rows, issue)
+    status_only = start.get("location_collection_requested") is False
+    if status_only:
+        if (start.get("trigger") != "control_restart" or start.get("gnss_status_requested") is not True
+                or start.get("late_gnss_status_requested") is True or end.get("location_detection_coverage") != "NOT_COVERED"):
+            issue("status_only_metadata_inconsistent")
+        for line, row in accepted:
+            event = row["event"]
+            if (event in STATUS_ONLY_EXCLUDED or event.startswith(("burst_", "late_gnss_", "nmea_"))
+                    or event in ("sdk_read", "sdk_error") and row.get("operation") in STATUS_ONLY_EXCLUDED_OPS):
+                issue("unexpected_location_or_other_subscription_in_status_only", line)
     timings = sdk_timings(accepted, issue)
     origin, deadline = start.get(RECEIVED), start.get(DEADLINE)
     end_elapsed = end.get(RECEIVED)
@@ -344,6 +360,9 @@ def inspect_stream(source, path, issues=None):
         "location_off_to_on": off_to_on,
         "window_focus": status("OBSERVED") if focus is not None else status("NOT_COVERED", ("first_focus_not_observed",)),
     }
+    if status_only:
+        for channel in ("startup_data", "callback_delivery", "location_off_to_on"):
+            coverage[channel] = status("NOT_COVERED", ("status_only_location_disabled",))
     return {
         "file": str(path), "session_id": start.get("session_id") if isinstance(start.get("session_id"), str) else None,
         "integrity": {"status": "INVALID" if issues else "COMPLETE", "issues": issues, "parsed_records": len(rows)},
@@ -555,7 +574,39 @@ def self_test():
         dict(end(), late_gnss_status_capture={"coverage": "UNOBSERVED", "nonempty_frames": 1}),
     ], separate_gnss_observers)
 
-    print(json.dumps({"synthetic_checks": 10, "passed": True}))
+    def status_only_report(result):
+        assert result["integrity"]["status"] == "COMPLETE"
+        assert all(result["coverage"][key]["status"] == "NOT_COVERED"
+                   for key in ("startup_data", "callback_delivery", "location_off_to_on"))
+        assert result["coverage"]["window_focus"]["status"] == "OBSERVED"
+        assert not any(result["sample_totals"].values())
+        assert result["sdk_intervals"]["gnss_status_registration"]["count"] == 1
+
+    status_only = [
+        dict(start(), trigger="control_restart", location_collection_requested=False, gnss_status_requested=True),
+        record("gnss_status_registration", 3, result="registered",
+               sdk_begin_elapsed_ns=zero + MS, sdk_end_elapsed_ns=zero + 3 * MS),
+        record("activity_window_focus", 4, focused=True),
+        record("gnss_status", 10, satellite_count=1),
+        record("activity_pause", 20),
+        record("gnss_status_removal", 30_001, result="removed"),
+        dict(end(), **{WRITTEN: zero + 30_002 * MS}, location_detection_coverage="NOT_COVERED"),
+    ]
+    check("status-only-offline-fixture", status_only, status_only_report)
+
+    def status_only_contaminated(result):
+        assert result["integrity"]["status"] == "INVALID"
+        assert [e["code"] for e in result["integrity"]["issues"]].count(
+            "unexpected_location_or_other_subscription_in_status_only") == 3
+        assert result["coverage"]["startup_data"]["status"] == "NOT_COVERED"
+
+    check("status-only-unexpected-requests-offline-fixture", status_only[:4] + [
+        record("cache_empty", 11, origin="cache"),
+        record("sdk_error", 12, operation="get_current_location"),
+        record("nmea_registration", 13, result="registered"),
+    ] + status_only[4:], status_only_contaminated)
+
+    print(json.dumps({"synthetic_checks": 12, "passed": True}))
     return 0
 
 

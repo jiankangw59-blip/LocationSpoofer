@@ -53,6 +53,14 @@ adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.cod
 
 记录器等首个监听器收到 `first_fix`，也收到至少一条请求 provider 和实际 provider 均为 GPS 的普通持续回调，以较晚接收时刻加 500 ms 安排一次第二监听器登记。两者随后同窗，第一监听器和原 GPS 请求继续运行。初次监听器事件仍为 `gnss_*`，第二监听器独立使用 `late_gnss_*`、`observer=late` 和 `late_gnss_status_capture`。两者各沿用逐星帧和生命周期限额，共用原会话期限和总事件限额。关窗和初次监听器停止会取消待登记任务，已尝试登记的监听器分别注销。只有实际有足够剩余采样时间、第二监听器保存至少三帧非空状态、并读到初次监听器和 GPS 的后续数据时，才报告 `OBSERVED`。缺首 Fix 等情况下保留 `UNOBSERVED` 原因。观察结果只描述回调覆盖，是否重放应核对第二监听器原样 lifecycle。该选项默认关闭，并要求 `include_gnss_status=true`。
 
+1.7.3（versionCode 14）可为一次前台会话关闭 Location 采集，只登记主 GNSS Status 监听器。
+
+```sh
+adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.codex.locationstartup --ez include_location false --ez include_gnss_status true --ez include_nmea false
+```
+
+`include_location` 默认 `true`。传入布尔 `false` 时，必须开启主逐星监听并关闭 NMEA 和晚登记监听器。非法组合在结束当前会话前拒绝。Status-only 会话不读取定位缓存、不注册持续定位、不发起单次请求，也不因焦点变化补采。正常结束或离开前台时使用同一会话清理。报告的 `location_collection_requested=false` 与 `location_detection_coverage=NOT_COVERED` 表示本会话不观测 Location。此模式的状态回调取决于系统当时的 GNSS 状态，也可能没有回调。
+
 第一条成功时返回策略快照文件名，第二条返回 `restart_requested`。该结果只确认已请求重录，实际登记与回调以新会话和系统定位服务记录为准。策略快照不调用 AppOps note 或修改权限、定位开关与 Thanox 设置。
 
 ### 高程模型参考
