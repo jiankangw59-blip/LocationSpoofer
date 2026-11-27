@@ -12,6 +12,7 @@
     <string name="lookup_wifi_import_failed">Apple Wi-Fi 查到 %1$d 个热点，导入未完成。</string>
     <string name="lookup_metadata_pending">正在查询 WiGLE 补充字段…</string>
     <string name="lookup_metadata_not_requested">未查询 WiGLE 补充字段。</string>
+    <string name="lookup_metadata_no_apple_records">没有可补充的 Apple Wi-Fi 记录，已跳过 WiGLE 字段查询。</string>
     <string name="lookup_metadata_no_key">未配置 WiGLE 凭据。</string>
     <string name="lookup_metadata_count">WiGLE 补充信息可用 %1$d 条（SSID %2$d、频率 %3$d）。</string>
     <string name="lookup_metadata_no_match">WiGLE 未找到匹配的补充字段。</string>

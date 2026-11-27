@@ -1,6 +1,7 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
 import android.content.Context
+import java.net.UnknownHostException
 import java.util.Locale
 import androidx.lifecycle.viewModelScope
 import com.amap.api.location.AMapLocationClient
@@ -547,8 +548,13 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double,
             reportLocationLookup(lookup, WIFI, if (error is RemoteWifiNoCoverageException)
                 R.string.lookup_wifi_no_data else R.string.lookup_wifi_failed)
         }
-        reportLocationLookup(lookup, WIFI_METADATA, if (count == null)
-            R.string.lookup_metadata_not_requested else R.string.lookup_metadata_unfinished)
+        val metadataLine = when {
+            count != null -> R.string.lookup_metadata_unfinished
+            error is RemoteWifiNoCoverageException || error is UnknownHostException ->
+                R.string.lookup_metadata_no_apple_records
+            else -> R.string.lookup_metadata_not_requested
+        }
+        reportLocationLookup(lookup, WIFI_METADATA, metadataLine)
         null
     }
     if (imported != null) {

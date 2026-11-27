@@ -12,6 +12,7 @@
     <string name="lookup_wifi_import_failed">Apple Wi-Fi found %1$d hotspots, but import did not finish.</string>
     <string name="lookup_metadata_pending">Checking WiGLE for additional fields…</string>
     <string name="lookup_metadata_not_requested">WiGLE metadata was not queried.</string>
+    <string name="lookup_metadata_no_apple_records">WiGLE metadata lookup was skipped because no Apple Wi-Fi records were available.</string>
     <string name="lookup_metadata_no_key">No WiGLE credentials configured.</string>
     <string name="lookup_metadata_count">WiGLE metadata on %1$d hotspots (SSID %2$d, frequency %3$d).</string>
     <string name="lookup_metadata_no_match">WiGLE found no matching metadata.</string>

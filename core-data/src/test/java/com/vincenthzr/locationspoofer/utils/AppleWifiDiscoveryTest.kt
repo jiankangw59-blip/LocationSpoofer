@@ -10,6 +10,7 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayOutputStream
+import java.net.UnknownHostException
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -200,6 +201,67 @@ class AppleWifiDiscoveryTest {
             tileLookup = { _, _, _, _, _ -> emptyList() }, wlocLookup = { _, _, _, _, _ -> listOf(point(2, 4000.0)) })
         assertThrows(RemoteWifiSearchIncompleteException::class.java) { runBlocking { discovery.query(TEST_LAT, TEST_LON, region) } }
         assertTrue("HOP_LIMIT" in discovery.lastReport!!.limits)
+    }
+
+    @Test fun firstTileDnsFailureStillQueriesSavedSeedAndReturnsNearbyWloc() {
+        var tileCalls = 0
+        var wlocCalls = 0
+        val nearby = point(2, 100.0)
+        val discovery = AppleWifiDiscovery(policy = oneTile.copy(maxTileRequests = 3),
+            tokenProvider = { "fixture" },
+            localSeeds = { _, _ -> listOf(mac(1)) },
+            tileLookup = { _, _, _, _, _ -> tileCalls++; throw UnknownHostException("fixture tile DNS") },
+            wlocLookup = { seeds, _, _, _, _ ->
+                wlocCalls++
+                assertEquals(listOf(mac(1)), seeds)
+                listOf(nearby)
+            }, wigleLookup = { _, _, _, _, _ -> error("Unexpected WiGLE request") })
+
+        val snapshot = runBlocking { discovery.query(TEST_LAT, TEST_LON, region) }
+
+        assertEquals(RemoteWifiSource.APPLE_WLOC, snapshot.source)
+        assertEquals(nearby.latitude, snapshot.points.single().latitude, 0.0)
+        assertEquals(nearby.longitude, snapshot.points.single().longitude, 0.0)
+        assertEquals(1, tileCalls)
+        assertEquals(1, wlocCalls)
+        val report = checkNotNull(discovery.lastReport)
+        assertEquals(1, report.tileRequests)
+        assertEquals(1, report.wlocRequests)
+        assertEquals(0, report.wigleRequests)
+        assertEquals("NEAR_WIFI_CONFIRMED", report.toJson().getString("wifi_coverage"))
+    }
+
+    @Test fun firstTileDnsFailureWithAnEmptyWlocRethrowsTheSameError() {
+        assertUnresolvedTileDnsPreserved(listOf(mac(1)), expectedWlocCalls = 1)
+    }
+
+    @Test fun firstTileDnsFailureWithoutASavedSeedDoesNotRepeatTheHost() {
+        assertUnresolvedTileDnsPreserved(emptyList(), expectedWlocCalls = 0)
+    }
+
+    private fun assertUnresolvedTileDnsPreserved(saved: List<String>, expectedWlocCalls: Int) {
+        var tileCalls = 0
+        var wlocCalls = 0
+        val dns = UnknownHostException("fixture tile DNS")
+        val discovery = AppleWifiDiscovery(policy = oneTile.copy(maxTileRequests = 3),
+            tokenProvider = { "fixture" }, localSeeds = { _, _ -> saved },
+            tileLookup = { _, _, _, _, _ -> tileCalls++; throw dns },
+            wlocLookup = { _, _, _, _, _ -> wlocCalls++; emptyList() },
+            wigleLookup = { _, _, _, _, _ -> error("Unexpected WiGLE request") })
+
+        val failure = assertThrows(UnknownHostException::class.java) {
+            runBlocking { discovery.query(TEST_LAT, TEST_LON, region) }
+        }
+
+        assertSame(dns, failure)
+        assertEquals(1, tileCalls)
+        assertEquals(expectedWlocCalls, wlocCalls)
+        val report = checkNotNull(discovery.lastReport)
+        assertEquals(1, report.tileRequests)
+        assertEquals(expectedWlocCalls, report.wlocRequests)
+        assertEquals(0, report.wigleRequests)
+        assertEquals("ERROR_UnknownHostException", report.outcome)
+        assertEquals("UNKNOWN", report.toJson().getString("wifi_coverage"))
     }
 
     @Test fun httpAndProtocolErrorsStopInsteadOfBecomingEmptyCoverage() {

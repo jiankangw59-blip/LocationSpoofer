@@ -7,6 +7,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.UnknownHostException
 import kotlin.math.cos
 
 data class AppleWifiSearchPolicy(
@@ -161,7 +162,15 @@ class AppleWifiDiscovery(
                 val tileKeys = seedTileKeys(latitude, longitude).take(policy.maxTileRequests)
                 for ((index, key) in tileKeys.withIndex()) {
                     tileRequests++
-                    val found = tileLookup(key, latitude, longitude, region, policy.seedRadiusMeters)
+                    var tileDnsFailure: UnknownHostException? = null
+                    val found = try {
+                        tileLookup(key, latitude, longitude, region, policy.seedRadiusMeters)
+                    } catch (error: UnknownHostException) {
+                        if (index != 0) throw error
+                        // The saved seeds use WLOC, which has a different host from the tiles.
+                        tileDnsFailure = error
+                        emptyList()
+                    }
                     retain(found)
                     if (accept().isNotEmpty()) return@withTimeoutOrNull snapshot(RemoteWifiSource.APPLE_TILE)
                     if (found.isNotEmpty()) walk(found.map { WifiSeed(it.bssid, it.distanceMeters) }, "APPLE_TILE")
@@ -170,6 +179,7 @@ class AppleWifiDiscovery(
                         val saved = localSeeds(latitude, longitude).mapNotNull { WifiBssid.normalize(it) }.distinct().take(12)
                         walk(saved.map { WifiSeed(it, null) }, "SAVED_REMOTE_RECORD")?.let { return@withTimeoutOrNull it }
                     }
+                    tileDnsFailure?.let { throw it }
                 }
                 val token = tokenProvider().trim()
                 if (token.isNotEmpty()) {
