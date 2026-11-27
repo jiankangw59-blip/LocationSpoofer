@@ -253,7 +253,8 @@ class AppleWifiDiscoveryTest {
             runBlocking { discovery.query(TEST_LAT, TEST_LON, region) }
         }
 
-        assertSame(dns, failure)
+        // Coroutine stacktrace recovery may wrap the thrown exception.
+        assertSame(dns, generateSequence<Throwable>(failure) { it.cause }.last())
         assertEquals(1, tileCalls)
         assertEquals(expectedWlocCalls, wlocCalls)
         val report = checkNotNull(discovery.lastReport)
