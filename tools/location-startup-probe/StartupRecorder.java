@@ -255,10 +255,22 @@ final class StartupRecorder {
             finish(session, "location_manager_unavailable", Stamp.now());
             return;
         }
+        boolean readGpsEarly = switch (session.trigger) {
+            case "application_attach", "warm_activity_create", "warm_foreground" -> true;
+            default -> false;
+        };
+        if (readGpsEarly) {
+            readCache(session, Set.of(LocationManager.GPS_PROVIDER), "early_gps_before_receiver", null, -1);
+        }
         registerReceiver(session);
         if (session.includeGnssStatus) registerGnssStatus(session);
         Set<String> available = providers(session, "startup");
-        readCache(session, available, "initial_cache_before_registration", null, -1);
+        Set<String> initialCacheProviders = available;
+        if (readGpsEarly && available != null) {
+            initialCacheProviders = new LinkedHashSet<>(available);
+            initialCacheProviders.remove(LocationManager.GPS_PROVIDER);
+        }
+        readCache(session, initialCacheProviders, "initial_cache_before_registration", null, -1);
         registerAvailable(session, available, "startup");
         emit(session, "registration_checkpoint", Stamp.now(), json("receiver_ready", session.receiver != null,
             "listeners_ready", session.registrationCount, "listeners_attempted", session.listeners.size()));

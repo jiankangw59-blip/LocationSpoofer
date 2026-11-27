@@ -445,8 +445,28 @@ def self_test():
         assert result["samples_at_session_start"]["0_200_ms"]["cache"] == 0
 
     check("zero-location-samples", [
-        start(), record("provider_state", 1, location_enabled=False), record("cache_empty", 7, origin="cache"), end(),
+        start(),
+        record("cache_empty", 7, origin="cache", phase="early_gps_before_receiver", requested_provider="gps",
+               sdk_begin_elapsed_ns=zero + MS, sdk_end_elapsed_ns=zero + 7 * MS),
+        record("broadcast_registration", 8, result="returned"),
+        record("provider_state", 9, location_enabled=False), end(),
     ], zero_samples)
+
+    def early_cache_error(result):
+        assert result["integrity"]["status"] == "COMPLETE"
+        assert result["sample_totals"]["cache_errors"] == 1
+        assert result["sample_totals"]["cache"] == 0
+        assert result["sample_totals"]["callback"] == 1
+        assert result["first_observations_from_session_start"]["any_location"]["delay_ns"] == 650 * MS
+        assert result["sdk_intervals"]["last_known"]["max_duration_ns"] == 2 * MS
+
+    check("early-gps-error-preserves-later-observations", [
+        start(), record("sdk_error", 7, operation="last_known", phase="early_gps_before_receiver",
+                        requested_provider="gps", exception_class="java.lang.IllegalArgumentException",
+                        sdk_begin_elapsed_ns=zero + 5 * MS, sdk_end_elapsed_ns=zero + 7 * MS),
+        record("broadcast_registration", 10, result="returned"), record("location", 650, origin="callback"),
+        dict(end(), errors=1),
+    ], early_cache_error)
 
     def truncated(result):
         assert {"invalid_json_line", "expected_one_session_end"} <= codes(result)
@@ -516,7 +536,7 @@ def self_test():
         record("location", 20, origin="cache", burst_anchor="session_start", slot=0), end(),
     ], warm_anchor)
 
-    print(json.dumps({"synthetic_checks": 8, "passed": True}))
+    print(json.dumps({"synthetic_checks": 9, "passed": True}))
     return 0
 
 
