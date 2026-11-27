@@ -60,9 +60,13 @@ public final class MainActivity extends Activity {
                     }
                 } else if (recorder.hasPermission()) {
                     Bundle extras = intent.getExtras();
-                    restartRecording("control_restart", received,
-                        booleanExtra(extras, "include_nmea", true),
-                        booleanExtra(extras, "include_gnss_status", false));
+                    boolean includeNmea = booleanExtra(extras, "include_nmea", true);
+                    boolean includeGnssStatus = booleanExtra(extras, "include_gnss_status", false);
+                    boolean includeLateGnssStatus = booleanExtra(extras, "include_late_gnss_status", false);
+                    if (includeLateGnssStatus && !includeGnssStatus) {
+                        throw new IllegalArgumentException("include_late_gnss_status requires include_gnss_status");
+                    }
+                    restartRecording("control_restart", received, includeNmea, includeGnssStatus, includeLateGnssStatus);
                     reply(RESULT_OK, "restart_requested");
                 } else {
                     reply(RESULT_CANCELED, "location_permission_missing");
@@ -205,7 +209,7 @@ public final class MainActivity extends Activity {
         permissionButton = addButton(content, "授予定位权限", () -> requestPermissions(new String[]{
             Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_PERMISSION_REQUEST));
         restartButton = addButton(content, "重新记录 30 秒",
-            () -> restartRecording("manual", StartupRecorder.Stamp.now(), true, false));
+            () -> restartRecording("manual", StartupRecorder.Stamp.now(), true, false, false));
         stopButton = addButton(content, "停止记录", () -> recorder.stop(owner, "manual_stop", null, StartupRecorder.Stamp.now()));
         copyButton = addButton(content, "复制当前报告", this::copyReport);
         noticeView = addText(content, "", 14);
@@ -214,8 +218,8 @@ public final class MainActivity extends Activity {
     }
 
     private void restartRecording(String trigger, StartupRecorder.Stamp entry, boolean includeNmea,
-                                  boolean includeGnssStatus) {
-        recorder.begin(trigger, owner, entry, includeNmea, includeGnssStatus);
+                                  boolean includeGnssStatus, boolean includeLateGnssStatus) {
+        recorder.begin(trigger, owner, entry, includeNmea, includeGnssStatus, includeLateGnssStatus);
         recorder.mark(owner, "activity_window_focus", entry, hasWindowFocus(), false);
         notice = "control_restart".equals(trigger) ? "已请求重新记录，时间窗口从接收诊断命令开始。"
             : "手动记录，时间窗口从本次点击开始。";

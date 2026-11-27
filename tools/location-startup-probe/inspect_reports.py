@@ -536,7 +536,26 @@ def self_test():
         record("location", 20, origin="cache", burst_anchor="session_start", slot=0), end(),
     ], warm_anchor)
 
-    print(json.dumps({"synthetic_checks": 9, "passed": True}))
+    def separate_gnss_observers(result):
+        assert result["integrity"]["status"] == "COMPLETE"
+        assert result["sample_totals"]["callback"] == 1
+        assert result["sample_totals"]["cache"] == 0
+        assert result["sdk_intervals"]["gnss_status_registration"]["count"] == 1
+        assert result["sdk_intervals"]["late_gnss_status_registration"]["count"] == 1
+
+    check("paired-gnss-observer-records", [
+        dict(start(), trigger="control_restart", gnss_status_requested=True, late_gnss_status_requested=True),
+        record("gnss_status_registration", 3, observer="primary", result="registered",
+               sdk_begin_elapsed_ns=zero + MS, sdk_end_elapsed_ns=zero + 3 * MS),
+        record("gnss_lifecycle", 8, observer="primary", state="first_fix", ttff_ms=1000),
+        record("location", 20, origin="callback", provider="gps", requested_provider="gps"),
+        record("late_gnss_status_registration", 523, observer="late", result="registered",
+               sdk_begin_elapsed_ns=zero + 520 * MS, sdk_end_elapsed_ns=zero + 523 * MS),
+        record("late_gnss_status", 1400, observer="late", satellite_count=1),
+        dict(end(), late_gnss_status_capture={"coverage": "UNOBSERVED", "nonempty_frames": 1}),
+    ], separate_gnss_observers)
+
+    print(json.dumps({"synthetic_checks": 10, "passed": True}))
     return 0
 
 

@@ -45,6 +45,14 @@ adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.cod
 
 省略 `include_gnss_status`、传入布尔 `false`、应用自动启动或使用界面按钮时，逐星状态采集关闭。报告分别记录逐星回调的注册与注销结果、逐星帧和 started、stopped、first_fix 生命周期回调。first_fix 保留 SDK 的 `ttff_ms`。API 36 使用回调进入记录线程时的 elapsed 和 wall 时间，无法把逐星帧与某次定位确定为同一个 fix。停止记录会注销已尝试登记的回调。最多保存 60 个逐星帧，每帧最多 256 条，另最多保存 64 条生命周期回调。超过上限的完整帧不写入，丢弃数留在 `session_end.gnss_status_capture`。只有注销记录时，结论限于 SDK 调用结果。未收到帧、空帧或达到上限时，相应数据的覆盖有限。标准 `Location.extras.satellites` 仍保留 SDK 原始数值及类型。
 
+1.7.2（versionCode 13）支持在同一次前台会话观察迟到的第二个逐星监听器。
+
+```sh
+adb shell am broadcast -a com.codex.locationstartup.RESTART_RECORDING -p com.codex.locationstartup --ez include_gnss_status true --ez include_late_gnss_status true
+```
+
+记录器等首个监听器收到 `first_fix`，也收到至少一条请求 provider 和实际 provider 均为 GPS 的普通持续回调，以较晚接收时刻加 500 ms 安排一次第二监听器登记。两者随后同窗，第一监听器和原 GPS 请求继续运行。初次监听器事件仍为 `gnss_*`，第二监听器独立使用 `late_gnss_*`、`observer=late` 和 `late_gnss_status_capture`。两者各沿用逐星帧和生命周期限额，共用原会话期限和总事件限额。关窗和初次监听器停止会取消待登记任务，已尝试登记的监听器分别注销。只有实际有足够剩余采样时间、第二监听器保存至少三帧非空状态、并读到初次监听器和 GPS 的后续数据时，才报告 `OBSERVED`。缺首 Fix 等情况下保留 `UNOBSERVED` 原因。观察结果只描述回调覆盖，是否重放应核对第二监听器原样 lifecycle。该选项默认关闭，并要求 `include_gnss_status=true`。
+
 第一条成功时返回策略快照文件名，第二条返回 `restart_requested`。该结果只确认已请求重录，实际登记与回调以新会话和系统定位服务记录为准。策略快照不调用 AppOps note 或修改权限、定位开关与 Thanox 设置。
 
 ### 高程模型参考
