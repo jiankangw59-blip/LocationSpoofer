@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.data.repository
 
+import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadataStatus
 import com.vincenthzr.locationspoofer.utils.WigleClient
 import com.vincenthzr.locationspoofer.utils.CoordinateUtils
 import com.vincenthzr.locationspoofer.utils.GeoMath
@@ -11,7 +12,13 @@ class WifiRepository(
     private val importer: RemoteEnvironmentImporter
 ) {
 
-    suspend fun fetchAppleWifi(gcjLatitude: Double, gcjLongitude: Double): Long {
+    data class AppleWifiImportResult(
+        val recordId: Long,
+        val metadataStatus: RemoteWifiMetadataStatus,
+        val metadataHttpStatus: Int?
+    )
+
+    suspend fun fetchAppleWifi(gcjLatitude: Double, gcjLongitude: Double): AppleWifiImportResult {
         val position = CoordinateUtils.gcj02ToWgs84(gcjLatitude, gcjLongitude)
         val cached = try { remote.loadLatest() }
             catch (error: kotlinx.coroutines.CancellationException) { throw error }
@@ -22,7 +29,7 @@ class WifiRepository(
         }
         val region = if (position.lat in 18.0..54.0 && position.lng in 73.0..135.0) RemoteWifiRegion.MAINLAND_CHINA else RemoteWifiRegion.GLOBAL
         val snapshot = validCache ?: remote.query(position.lat, position.lng, region)
-        return importer.importWifi(snapshot)
+        return AppleWifiImportResult(importer.importWifi(snapshot), snapshot.metadataStatus, snapshot.metadataHttpStatus)
     }
 
     suspend fun validateToken(token: String): Boolean = wigleClient.validateToken(token)

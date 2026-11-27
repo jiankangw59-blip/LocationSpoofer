@@ -49,7 +49,7 @@
     <string name="remote_wifi_metadata_no_match">WiGLE 本次区域结果未匹配这些 BSSID，保留已有字段或未知。</string>
     <string name="remote_wifi_metadata_http">WiGLE 暂不可用（HTTP %1$d），已保留 Apple 记录和仍有效的已有字段。</string>
     <string name="remote_wifi_metadata_unavailable">WiGLE 暂不可用，已保留 Apple 记录和仍有效的已有字段。</string>
-    <string name="remote_wifi_metadata_auth">WiGLE 凭据或接口授权未通过（HTTP %1$d），请在数据源设置检查 Basic Auth Base64。Apple 记录仍可使用。</string>
+    <string name="remote_wifi_metadata_auth">WiGLE 补充字段鉴权失败（HTTP %1$d）。请检查或更新凭据。Apple 热点已保留。</string>
     <string name="remote_wifi_metadata_observed">WiGLE 最后记录于 %1$s</string>
     <string name="remote_wifi_ssid">名称（WiGLE）%1$s</string>
     <string name="remote_wifi_empty_ssid">名称（WiGLE）空名称</string>

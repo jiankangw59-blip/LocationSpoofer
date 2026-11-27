@@ -1,13 +1,18 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
 import android.content.Context
+import android.widget.Toast
 import java.util.Locale
 import androidx.lifecycle.viewModelScope
 import com.amap.api.location.AMapLocationClient
 import com.amap.api.location.AMapLocationClientOption
+import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadataStatus
+import com.vincenthzr.locationspoofer.data.repository.WifiRepository
 import com.vincenthzr.locationspoofer.ui.R
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -464,18 +469,25 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
     withContext(Dispatchers.Main) {
         _uiState.update { it.copy(wifiLoadStatus = com.vincenthzr.locationspoofer.data.model.WifiLoadStatus.LOADING) }
     }
-    try {
-        val id = wifiRepository.fetchAppleWifi(lat, lng)
+    val imported = try {
+        val result = wifiRepository.fetchAppleWifi(lat, lng)
         withTimeoutOrNull(5_000) {
-            environmentLocations.first { records -> records.any { it.location.id == id && it.wifis.isNotEmpty() } }
+            environmentLocations.first { records ->
+                records.any { it.location.id == result.recordId && it.wifis.isNotEmpty() }
+            }
         } ?: error("Imported Wi-Fi was not observed")
         val recordCount = environmentDao.getRecordCount()
         _uiState.update { it.copy(environmentRecordCount = recordCount) }
-        return
+        result
     } catch (error: kotlinx.coroutines.CancellationException) {
         throw error
     } catch (_: Exception) {
         // The existing WiGLE path remains a fallback when Apple has no usable data.
+        null
+    }
+    if (imported != null) {
+        showAppleWifiMetadataNotice(lat, lng, imported)
+        return
     }
     val settingsToken = settingsRepository.getWigleApiToken()
     if (settingsToken.isBlank()) {
@@ -597,6 +609,28 @@ internal suspend fun MainViewModel.fetchRemoteWifiSync(lat: Double, lng: Double)
             }
         }
     }
+}
+
+private suspend fun MainViewModel.showAppleWifiMetadataNotice(
+    lat: Double,
+    lng: Double,
+    imported: WifiRepository.AppleWifiImportResult
+): Unit = withContext(Dispatchers.Main) {
+    currentCoroutineContext().ensureActive()
+    if (!configurationTargetMatches(lat, lng) || lastAppleWifiMetadataNotice == imported) return@withContext
+
+    val message = when (imported.metadataStatus) {
+        RemoteWifiMetadataStatus.NOT_REQUESTED, RemoteWifiMetadataStatus.MATCHED -> null
+        RemoteWifiMetadataStatus.NOT_CONFIGURED -> context.getString(R.string.remote_wifi_metadata_no_key)
+        RemoteWifiMetadataStatus.NO_MATCH -> context.getString(R.string.remote_wifi_metadata_no_match)
+        RemoteWifiMetadataStatus.UNAVAILABLE -> when (val httpStatus = imported.metadataHttpStatus) {
+            401, 403 -> context.getString(R.string.remote_wifi_metadata_auth, httpStatus)
+            null -> context.getString(R.string.remote_wifi_metadata_unavailable)
+            else -> context.getString(R.string.remote_wifi_metadata_http, httpStatus)
+        }
+    }
+    lastAppleWifiMetadataNotice = if (message != null) imported else null
+    if (message != null) Toast.makeText(context, message, Toast.LENGTH_LONG).show()
 }
 
 internal suspend fun MainViewModel.fetchRemoteCellsSync(lat: Double, lng: Double) {

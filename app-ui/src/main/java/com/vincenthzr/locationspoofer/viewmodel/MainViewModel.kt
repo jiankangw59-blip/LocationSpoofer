@@ -54,6 +54,7 @@ class MainViewModel(
     internal var mockCapabilitiesJob: Job? = null
     internal var environmentUpdateJob: Job? = null
     internal var pointConfigurationJob: Job? = null
+    internal var lastAppleWifiMetadataNotice: WifiRepository.AppleWifiImportResult? = null
 
     val collectionRoutes = environmentDao.observeCollectionRoutes().distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())

@@ -50,7 +50,7 @@
     <string name="remote_wifi_metadata_no_match">No matching BSSIDs in this WiGLE area result. Known fields are retained; others remain unknown.</string>
     <string name="remote_wifi_metadata_http">WiGLE unavailable (HTTP %1$d). Apple records and valid cached fields were retained.</string>
     <string name="remote_wifi_metadata_unavailable">WiGLE unavailable. Apple records and valid cached fields were retained.</string>
-    <string name="remote_wifi_metadata_auth">WiGLE credentials or API access were rejected (HTTP %1$d). Check Basic Auth Base64 in data source settings. Apple records remain available.</string>
+    <string name="remote_wifi_metadata_auth">WiGLE metadata authorization failed (HTTP %1$d). Check or update your credentials. Apple hotspots were retained.</string>
     <string name="remote_wifi_metadata_observed">WiGLE last recorded at %1$s</string>
     <string name="remote_wifi_ssid">SSID (WiGLE) %1$s</string>
     <string name="remote_wifi_empty_ssid">SSID (WiGLE) empty</string>
