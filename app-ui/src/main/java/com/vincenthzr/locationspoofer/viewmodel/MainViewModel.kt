@@ -21,6 +21,7 @@ import com.vincenthzr.locationspoofer.ui.screen.spoofing.SpoofingUiState
 import com.vincenthzr.locationspoofer.utils.EnvironmentScanner
 import com.vincenthzr.locationspoofer.utils.LSPosedManager
 import com.vincenthzr.locationspoofer.utils.OpenCellIdClient
+import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,6 +55,8 @@ class MainViewModel(
     internal var mockCapabilitiesJob: Job? = null
     internal var environmentUpdateJob: Job? = null
     internal var pointConfigurationJob: Job? = null
+    internal var draggingPointConfigurationJob: Job? = null
+    internal var selectedPoiAddress: SelectedPoiAddress? = null
     internal var lastAppleWifiMetadataNotice: WifiRepository.AppleWifiImportResult? = null
 
     val collectionRoutes = environmentDao.observeCollectionRoutes().distinctUntilChanged()

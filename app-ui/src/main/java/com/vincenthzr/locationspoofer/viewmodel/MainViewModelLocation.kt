@@ -9,6 +9,9 @@ import com.amap.api.location.AMapLocationClientOption
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadataStatus
 import com.vincenthzr.locationspoofer.data.repository.WifiRepository
 import com.vincenthzr.locationspoofer.ui.R
+import com.vincenthzr.locationspoofer.ui.screen.AppPoiItem
+import com.vincenthzr.locationspoofer.utils.CoordinateUtils
+import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -255,8 +258,28 @@ private fun MainViewModel.getNativeConverted(
 }
 
 // 坐标输入
+internal fun MainViewModel.selectSearchPoint(poi: AppPoiItem) {
+    val address = if (poi.isOnlineResult) {
+        SelectedPoiAddress(CoordinateUtils.LatLng(poi.lat, poi.lng), poi.title, poi.snippet)
+    } else null
+    if (!configurationTargetMatches(poi.lat, poi.lng) || selectedPoiAddress != address) {
+        mapMoveJob?.cancel()
+        pointConfigurationJob?.cancel()
+    }
+    selectedPoiAddress = address
+    _uiState.update {
+        it.copy(latitudeInput = poi.lat.toString(), longitudeInput = poi.lng.toString(), showCoordinateError = false)
+    }
+    evaluateMockCapabilities()
+}
+
 internal fun MainViewModel.updateLongitude(value: String) {
     if (isValidCoord(value)) {
+        if (_uiState.value.longitudeInput.toDoubleOrNull() != value.toDoubleOrNull()) {
+            selectedPoiAddress = null
+            mapMoveJob?.cancel()
+            pointConfigurationJob?.cancel()
+        }
         _uiState.update { it.copy(longitudeInput = value, showCoordinateError = false) }
         evaluateMockCapabilities()
     }
@@ -264,6 +287,11 @@ internal fun MainViewModel.updateLongitude(value: String) {
 
 internal fun MainViewModel.updateLatitude(value: String) {
     if (isValidCoord(value)) {
+        if (_uiState.value.latitudeInput.toDoubleOrNull() != value.toDoubleOrNull()) {
+            selectedPoiAddress = null
+            mapMoveJob?.cancel()
+            pointConfigurationJob?.cancel()
+        }
         _uiState.update { it.copy(latitudeInput = value, showCoordinateError = false) }
         evaluateMockCapabilities()
     }

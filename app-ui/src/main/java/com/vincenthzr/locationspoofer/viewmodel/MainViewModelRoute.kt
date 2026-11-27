@@ -118,7 +118,9 @@ internal fun MainViewModel.joystickMaxSpeedMs(): Float =
 
 internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging: Boolean = false) {
     val samePoint = configurationTargetMatches(lat, lng)
-    if (!samePoint) {
+    val finalizingDrag = !isDragging && pointConfigurationJob != null &&
+        pointConfigurationJob === draggingPointConfigurationJob
+    if (!samePoint || finalizingDrag) {
         pointConfigurationJob?.cancel()
         pointConfigurationJob = null
     }
@@ -135,8 +137,6 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
     val state = _uiState.value
     if (samePoint && pointConfigurationJob?.isActive == true) return
     if (state.isSpoofingActive) {
-        settingsRepository.lastSpoofedLat = lat.toString()
-        settingsRepository.lastSpoofedLng = lng.toString()
         pointConfigurationJob = viewModelScope.launch {
             if (state.mockWifi && !hasLocalWifiWithin50m(lat, lng) && !isDragging) {
                 fetchRemoteWifiSync(lat, lng)
@@ -162,10 +162,17 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
                 mockWifi = updatedState.mockWifi && updatedState.canMockWifi,
                 mockCell = updatedState.mockCell,
                 mockBluetooth = updatedState.mockBluetooth && updatedState.canMockBluetooth,
-                enableJitter = updatedState.enableJitter
+                enableJitter = updatedState.enableJitter,
+                selectedPoi = selectedPoiAddress.takeUnless { isDragging },
+                reuseNearbyAddress = isDragging,
+                onDesiredCommitted = {
+                    settingsRepository.lastSpoofedLat = lat.toString()
+                    settingsRepository.lastSpoofedLng = lng.toString()
+                },
+                onAcceptedPosition = { motionController.onStaticStarted(lat, lng) }
             )
-            motionController.onStaticStarted(lat, lng)
         }
+        draggingPointConfigurationJob = pointConfigurationJob.takeIf { isDragging }
     }
 }
 

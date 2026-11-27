@@ -92,6 +92,7 @@ import com.vincenthzr.locationspoofer.viewmodel.toggleMockBluetooth
 import com.vincenthzr.locationspoofer.viewmodel.toggleMockCell
 import com.vincenthzr.locationspoofer.viewmodel.toggleMockWifi
 import com.vincenthzr.locationspoofer.viewmodel.toggleRestartAppsOnSpoof
+import com.vincenthzr.locationspoofer.viewmodel.selectSearchPoint
 import com.vincenthzr.locationspoofer.viewmodel.updateLatitude
 import com.vincenthzr.locationspoofer.viewmodel.updateLongitude
 import kotlinx.coroutines.launch
@@ -199,7 +200,7 @@ fun LocationTab(
             ) { results ->
                 onIntent(
                     SpoofingIntent.SetSearchResults(
-                        results = results,
+                        results = results.map { it.copy(isOnlineResult = true) },
                         show = true,
                         query = spoofingUiState.searchQuery
                     )
@@ -416,8 +417,7 @@ fun LocationTab(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .noRippleClickable {
-                                                    viewModel.updateLatitude(poi.lat.toString())
-                                                    viewModel.updateLongitude(poi.lng.toString())
+                                                    viewModel.selectSearchPoint(poi)
                                                     mapController?.animateCamera(
                                                         poi.lat,
                                                         poi.lng,

@@ -11,6 +11,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -34,16 +36,13 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     // 不随 lat/lng/active 这类瞬时状态一起在调用方逐层透传，这里每次发布时直接读取最新值即可。
     private val settingsManager = SettingsManager(context)
 
-    private var lastGeocodedLat = -999.0
-    private var lastGeocodedLng = -999.0
-    private var cachedProvince = ""
-    private var cachedCity = ""
-    private var cachedDistrict = ""
-    private var cachedStreet = ""
-    private var cachedStreetNum = ""
-    private var cachedAddressText = ""
-    private var cachedCountry = ""
-    private var cachedPoiName = ""
+    private val positionAddress = PositionAddressResolver(::reverseGeocode) { first, second ->
+        val distance = FloatArray(1)
+        android.location.Location.distanceBetween(first.lat, first.lng, second.lat, second.lng, distance)
+        distance[0] <= 500f
+    }
+
+    data class StartingMotion(val realismLevel: Int, val speedFluctuationPct: Int)
 
     suspend fun saveConfig(
         lat: Double,
@@ -68,8 +67,13 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         stopAtDestination: Boolean = false,
         enableStepSimulation: Boolean = true,
         stepCadenceSpm: Int = 165,
-        isAutoCadence: Boolean = true
+        isAutoCadence: Boolean = true,
+        selectedPoi: SelectedPoiAddress? = null,
+        reuseNearbyAddress: Boolean = active && simMode != "STILL",
+        startingMotion: StartingMotion? = null,
+        onDesiredCommitted: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
+        val addressContext = currentCoroutineContext()
         val routeArray = JSONArray()
         routePoints.forEach { p ->
             val obj = JSONObject()
@@ -80,7 +84,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
 
 
         val json = JSONObject().apply {
-            putPosition(this, lat, lng)
+            putPosition(this, lat, lng, reuseNearbyAddress, selectedPoi) { addressContext.ensureActive() }
             put("active", active)
             put("sim_mode", simMode)
             put("sim_bearing", simBearing.toDouble())
@@ -104,10 +108,10 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
             appCoordinateSystems.forEach { (pkg, sys) -> coordSysObj.put(pkg, sys) }
             put("app_coordinate_systems", coordSysObj)
 
-            put("route_distance_offset", SpoofingState.routeDistanceOffset)
-            putPersistentSettings(this)
+            put("route_distance_offset", if (startingMotion != null) 0.0 else SpoofingState.routeDistanceOffset)
+            putPersistentSettings(this, startingMotion)
         }
-        write(json)
+        writeMutex.writeCurrentPosition { writeLocked(json, onDesiredCommitted) }
     }
 
     private val _writeFailures = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -135,17 +139,25 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     /** 返回最近一次发布的完整配置，供进程或设备重启后的恢复流程复用环境数据。 */
     fun lastConfigSnapshot(): JSONObject? = lastJson?.let { JSONObject(it.toString()) }
 
-    /** 写入坐标及其派生字段（WGS-84 / BD-09 坐标、逆地理编码地址）；移动超过 500 米才重新逆地理编码。需在 IO 线程调用 */
-    fun putPosition(json: JSONObject, lat: Double, lng: Double) {
-        refreshGeocodeIfMoved(lat, lng)
-        json.put("province", cachedProvince)
-        json.put("city", cachedCity)
-        json.put("district", cachedDistrict)
-        json.put("street", cachedStreet)
-        json.put("streetNum", cachedStreetNum)
-        json.put("address", cachedAddressText)
-        json.put("country", cachedCountry)
-        json.put("poiName", cachedPoiName)
+    /** Writes coordinates and location-bound address fields from an IO dispatcher. */
+    fun putPosition(
+        json: JSONObject,
+        lat: Double,
+        lng: Double,
+        reuseNearbyAddress: Boolean = true,
+        selectedPoi: SelectedPoiAddress? = null,
+        ensureCurrent: () -> Unit = {}
+    ) {
+        val point = CoordinateUtils.LatLng(lat, lng)
+        val address = positionAddress.resolve(point, reuseNearbyAddress, ensureCurrent).withSelectedPoi(point, selectedPoi)
+        json.put("province", address.province)
+        json.put("city", address.city)
+        json.put("district", address.district)
+        json.put("street", address.street)
+        json.put("streetNum", address.streetNum)
+        json.put("address", address.address)
+        json.put("country", address.country)
+        json.put("poiName", address.poiName)
 
         val wgs = CoordinateUtils.gcj02ToWgs84(lat, lng)
         val bd = CoordinateUtils.gcj02ToBd09(lat, lng)
@@ -173,7 +185,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     }
 
     /** 独立于每次模拟会话的常驻设置项，调用方不逐层透传，每次发布时直接读取最新值 */
-    private fun putPersistentSettings(json: JSONObject) {
+    private fun putPersistentSettings(json: JSONObject, startingMotion: StartingMotion? = null) {
         val systemHookPackagesArr = JSONArray()
         settingsManager.getSystemHookPackages().forEach { systemHookPackagesArr.put(it) }
         json.put("system_hook_packages", systemHookPackagesArr)
@@ -182,42 +194,31 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         json.put("force_location_enabled", settingsManager.forceLocationEnabled)
         json.put("debug_dump_system_services", settingsManager.debugDumpSystemServices)
         // 运动真实度：Xposed 端据此给速度、步频、海拔、加速度加起伏；随机强度与速度浮动在会话内取开始时的快照
-        json.put("realism_level", SpoofingState.realismLevel.takeIf { it >= 0 } ?: settingsManager.realismLevel)
-        json.put("speed_fluctuation_pct", SpoofingState.speedFluctuationPct.takeIf { it >= 0 } ?: settingsManager.speedFluctuationPct)
+        val realismLevel = startingMotion?.realismLevel
+            ?: SpoofingState.realismLevel.takeIf { it >= 0 } ?: settingsManager.realismLevel
+        val speedFluctuation = startingMotion?.speedFluctuationPct
+            ?: SpoofingState.speedFluctuationPct.takeIf { it >= 0 } ?: settingsManager.speedFluctuationPct
+        json.put("realism_level", realismLevel)
+        json.put("speed_fluctuation_pct", speedFluctuation)
         json.put("gait_template", if (settingsManager.useGaitTemplate) settingsManager.gaitTemplate else "")
         json.put("altitude_variation_m", settingsManager.altitudeVariationM)
     }
 
-    private fun refreshGeocodeIfMoved(lat: Double, lng: Double) {
-        val dist = FloatArray(1)
-        if (lastGeocodedLat != -999.0) {
-            android.location.Location.distanceBetween(lastGeocodedLat, lastGeocodedLng, lat, lng, dist)
-        }
-        if (lastGeocodedLat != -999.0 && dist[0] <= 500f) return
-        lastGeocodedLat = lat
-        lastGeocodedLng = lng
-        try {
-            val geocoder = android.location.Geocoder(context, java.util.Locale.CHINA)
-            // lat/lng 是 GCJ-02，而 Geocoder 按 Android 规范接收 WGS-84；直接传 GCJ-02 会被后端再加密一次，
-            // 偏出数百米、反查到错误的街道（issue #62：广州塔 → 赏湖街）
-            val wgs = CoordinateUtils.gcj02ToWgs84(lat, lng)
-
-            @Suppress("DEPRECATION")
-            val addresses = geocoder.getFromLocation(wgs.lat, wgs.lng, 1)
-            if (!addresses.isNullOrEmpty()) {
-                val addr = addresses[0]
-                cachedProvince = addr.adminArea ?: ""
-                cachedCity = addr.locality ?: addr.subAdminArea ?: ""
-                cachedDistrict = addr.subLocality ?: ""
-                cachedStreet = addr.thoroughfare ?: ""
-                cachedStreetNum = addr.subThoroughfare ?: ""
-                cachedAddressText = addr.getAddressLine(0) ?: ""
-                cachedCountry = addr.countryName ?: "中国"
-                cachedPoiName = addr.featureName ?: ""
-            }
-        } catch (e: Exception) {
-            // 逆地理编码失败时静默降级
-        }
+    private fun reverseGeocode(point: CoordinateUtils.LatLng): PositionAddress? {
+        val geocoder = Geocoder(context, java.util.Locale.CHINA)
+        val wgs = CoordinateUtils.gcj02ToWgs84(point.lat, point.lng)
+        @Suppress("DEPRECATION")
+        val address = geocoder.getFromLocation(wgs.lat, wgs.lng, 1)?.firstOrNull() ?: return null
+        return PositionAddress(
+            province = address.adminArea.orEmpty(),
+            city = address.locality ?: address.subAdminArea.orEmpty(),
+            district = address.subLocality.orEmpty(),
+            street = address.thoroughfare.orEmpty(),
+            streetNum = address.subThoroughfare.orEmpty(),
+            address = address.getAddressLine(0).orEmpty(),
+            country = address.countryName.orEmpty(),
+            poiName = address.featureName.orEmpty()
+        )
     }
 
     private val writeMutex = Mutex()
@@ -293,9 +294,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         publicationRetry = null
     }
 
-    private suspend fun write(json: JSONObject): Boolean = writeMutex.withLock { writeLocked(json) }
-
-    private fun writeLocked(json: JSONObject): Boolean {
+    private fun writeLocked(json: JSONObject, onDesiredCommitted: (() -> Unit)? = null): Boolean {
         // Remember the desired state even if a stop/pause happens while the service is disconnected.
         // Reconnection must never replay an older active session over a newer stop request.
         if (!transportPrefs.edit().putString(DESIRED_CONFIG, json.toString())
@@ -305,6 +304,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         }
         lastJson = json
         publicationPending = true
+        onDesiredCommitted?.invoke()
         val service = XposedModuleStatus.mService
         if (service == null) {
             cancelPublicationRetryLocked()

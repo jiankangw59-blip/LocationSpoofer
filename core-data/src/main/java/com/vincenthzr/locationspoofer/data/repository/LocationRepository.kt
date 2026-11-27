@@ -3,6 +3,9 @@ package com.vincenthzr.locationspoofer.data.repository
 import android.content.Context
 import android.location.LocationManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import com.vincenthzr.locationspoofer.data.db.SavedRouteDao
 import com.vincenthzr.locationspoofer.data.db.SavedRouteEntity
 import com.vincenthzr.locationspoofer.data.model.RootSetupTestResult
@@ -12,6 +15,7 @@ import com.vincenthzr.locationspoofer.data.state.SpoofingState
 import com.vincenthzr.locationspoofer.utils.ConfigManager
 import com.vincenthzr.locationspoofer.utils.LSPosedManager
 import com.vincenthzr.locationspoofer.utils.RootManager
+import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
 import com.vincenthzr.locationspoofer.utils.SettingsManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,6 +28,8 @@ class LocationRepository(
     private val savedRouteDao: SavedRouteDao,
     private val spoofingServiceController: SpoofingServiceController
 ) {
+    private val lifecycleHandler = Handler(Looper.getMainLooper())
+
     /** 用户在设置里选择的 root 方案；解析失败（脏数据/尚未设置）时退回 AUTO */
     private fun currentRootSolution(): RootSolution =
         try {
@@ -121,23 +127,12 @@ class LocationRepository(
         stopAtDestination: Boolean = false,
         enableStepSimulation: Boolean = true,
         stepCadenceSpm: Int = 165,
-        isAutoCadence: Boolean = true
+        isAutoCadence: Boolean = true,
+        selectedPoi: SelectedPoiAddress? = null,
+        onDesiredCommitted: (() -> Unit)? = null,
+        onAcceptedStart: (() -> Unit)? = null
     ) {
-        SpoofingState.isActive = true
-        SpoofingState.latitude = lat
-        SpoofingState.longitude = lng
-        SpoofingState.startTimestamp = startTime
-        SpoofingState.realismLevel = settingsManager.realismLevel
-        SpoofingState.speedFluctuationPct = settingsManager.speedFluctuationPct
-        SpoofingState.routeDistanceOffset = 0.0
-        SpoofingState.simMode = simMode
-        SpoofingState.simBearing = simBearing
-        SpoofingState.wifiJson = wifiJson
-        SpoofingState.cellJson = cellJson
-        SpoofingState.bluetoothJson = bluetoothJson
-        SpoofingState.routeJson = routePointsToJson(routePoints)
-        SpoofingState.isRouteMode = isRouteMode
-        SpoofingState.enableJitter = enableJitter
+        val startingMotion = ConfigManager.StartingMotion(settingsManager.realismLevel, settingsManager.speedFluctuationPct)
 
         // 与 stopSpoofing() 里的 revokeMockLocation() 对称：上一次停止模拟时会把
         // android:mock_location 重置为 default（用于避免被系统安全中心一直记录为"模拟中"），
@@ -156,10 +151,10 @@ class LocationRepository(
             startTime,
             routePoints,
             isRouteMode,
-            SpoofingState.wifiJson,
+            wifiJson,
             appCoordinateSystems,
-            SpoofingState.cellJson,
-            SpoofingState.bluetoothJson,
+            cellJson,
+            bluetoothJson,
             mockWifi,
             mockCell,
             mockBluetooth,
@@ -170,22 +165,41 @@ class LocationRepository(
             stopAtDestination,
             enableStepSimulation,
             stepCadenceSpm,
-            isAutoCadence
+            isAutoCadence,
+            selectedPoi,
+            startingMotion = startingMotion,
+            onDesiredCommitted = {
+                SpoofingState.isActive = true
+                SpoofingState.realismLevel = startingMotion.realismLevel
+                SpoofingState.speedFluctuationPct = startingMotion.speedFluctuationPct
+                SpoofingState.routeDistanceOffset = 0.0
+                updatePositionState(lat, lng, simMode, simBearing, startTime, routePoints, isRouteMode,
+                    wifiJson, cellJson, bluetoothJson, enableJitter)
+                onDesiredCommitted?.invoke()
+                enqueueServiceLifecycle("start", onAcceptedStart) {
+                    spoofingServiceController.startForeground(context, lat, lng)
+                }
+            }
         )
-
-        spoofingServiceController.startForeground(context, lat, lng)
     }
 
-    suspend fun stopSpoofing(context: Context) {
-        SpoofingState.isActive = false
-        SpoofingState.latitude = 0.0
-        SpoofingState.longitude = 0.0
-        SpoofingState.wifiJson = "[]"
-        SpoofingState.cellJson = "[]"
-        SpoofingState.bluetoothJson = "[]"
-        SpoofingState.routeJson = "[]"
-        SpoofingState.isRouteMode = false
-        configManager.saveConfig(0.0, 0.0, false)
+    suspend fun stopSpoofing(context: Context, onAcceptedStop: (() -> Unit)? = null) {
+        var desiredCommitted = false
+        configManager.saveConfig(0.0, 0.0, false, onDesiredCommitted = {
+            desiredCommitted = true
+            settingsManager.isSpoofingActive = false
+            SpoofingState.isActive = false
+            SpoofingState.latitude = 0.0
+            SpoofingState.longitude = 0.0
+            SpoofingState.wifiJson = "[]"
+            SpoofingState.cellJson = "[]"
+            SpoofingState.bluetoothJson = "[]"
+            SpoofingState.routeJson = "[]"
+            SpoofingState.isRouteMode = false
+            enqueueServiceLifecycle("stop", onAcceptedStop) {
+                spoofingServiceController.stop(context)
+            }
+        })
 
         // 1. 同步在当前进程清理所有可能残留的 TestProvider
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
@@ -216,7 +230,7 @@ class LocationRepository(
         }
 
         // 2. 停止前台模拟服务
-        spoofingServiceController.stop(context)
+        if (!desiredCommitted) spoofingServiceController.stop(context)
 
         // 3. 彻底重置系统的 mock_location 状态，防止被澎湃OS/系统安全中心记录为模拟中
         rootManager.revokeMockLocation()
@@ -241,6 +255,18 @@ class LocationRepository(
         configManager.patchConfig { configManager.putEnvironment(it, wifiJson, cellJson, bluetoothJson) }
     }
 
+    // Enqueue in desired commit order and invoke the service outside the configuration lock.
+    private fun enqueueServiceLifecycle(action: String, onApplied: (() -> Unit)?, request: () -> Unit) {
+        lifecycleHandler.post {
+            try {
+                request()
+            } catch (error: RuntimeException) {
+                Log.w("LocationSpoofer", "Foreground service $action request failed (${error.javaClass.simpleName})")
+            }
+            onApplied?.invoke()
+        }
+    }
+
     suspend fun updateConfig(
         lat: Double,
         lng: Double,
@@ -261,7 +287,61 @@ class LocationRepository(
         stopAtDestination: Boolean = false,
         enableStepSimulation: Boolean = true,
         stepCadenceSpm: Int = 165,
-        isAutoCadence: Boolean = true
+        isAutoCadence: Boolean = true,
+        selectedPoi: SelectedPoiAddress? = null,
+        reuseNearbyAddress: Boolean = simMode != "STILL",
+        onDesiredCommitted: (() -> Unit)? = null,
+        onAcceptedPosition: (() -> Unit)? = null
+    ) {
+        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
+        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
+        configManager.saveConfig(
+            lat,
+            lng,
+            true,
+            simMode,
+            simBearing,
+            startTime,
+            routePoints,
+            isRouteMode,
+            wifiJson,
+            appCoordinateSystems,
+            cellJson,
+            bluetoothJson,
+            mockWifi,
+            mockCell,
+            mockBluetooth,
+            enableJitter,
+            alt,
+            satCount,
+            speedMs,
+            stopAtDestination,
+            enableStepSimulation,
+            stepCadenceSpm,
+            isAutoCadence,
+            selectedPoi,
+            reuseNearbyAddress,
+            onDesiredCommitted = {
+                updatePositionState(lat, lng, simMode, simBearing, startTime, routePoints, isRouteMode,
+                    wifiJson, cellJson, bluetoothJson, enableJitter)
+                onDesiredCommitted?.invoke()
+                if (onAcceptedPosition != null) lifecycleHandler.post { onAcceptedPosition() }
+            }
+        )
+    }
+
+    private fun updatePositionState(
+        lat: Double,
+        lng: Double,
+        simMode: String,
+        simBearing: Float,
+        startTime: Long,
+        routePoints: List<RoutePoint>,
+        isRouteMode: Boolean,
+        wifiJson: String,
+        cellJson: String,
+        bluetoothJson: String,
+        enableJitter: Boolean
     ) {
         SpoofingState.latitude = lat
         SpoofingState.longitude = lng
@@ -274,33 +354,6 @@ class LocationRepository(
         SpoofingState.cellJson = cellJson
         SpoofingState.bluetoothJson = bluetoothJson
         SpoofingState.enableJitter = enableJitter
-        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
-        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
-        configManager.saveConfig(
-            lat,
-            lng,
-            true,
-            simMode,
-            simBearing,
-            startTime,
-            routePoints,
-            isRouteMode,
-            SpoofingState.wifiJson,
-            appCoordinateSystems,
-            SpoofingState.cellJson,
-            SpoofingState.bluetoothJson,
-            mockWifi,
-            mockCell,
-            mockBluetooth,
-            enableJitter,
-            alt,
-            satCount,
-            speedMs,
-            stopAtDestination,
-            enableStepSimulation,
-            stepCadenceSpm,
-            isAutoCadence
-        )
     }
 
     suspend fun updateWifiJson(wifiJson: String, appCoordinateSystems: Map<String, String>) {

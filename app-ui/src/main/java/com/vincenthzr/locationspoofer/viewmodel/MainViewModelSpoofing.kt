@@ -54,9 +54,7 @@ internal fun MainViewModel.startSpoofing() {
             if (!configurationTargetMatches(lat, lng)) return@launch
 
             val updatedState = _uiState.value
-            settingsRepository.isSpoofingActive = true
-            settingsRepository.lastSpoofedLat = lat.toString()
-            settingsRepository.lastSpoofedLng = lng.toString()
+            var desiredCommitted = false
             val now = System.currentTimeMillis()
             locationRepository.startSpoofing(
                 context, lat, lng,
@@ -69,19 +67,26 @@ internal fun MainViewModel.startSpoofing() {
                 updatedState.mockWifi && updatedState.canMockWifi,
                 updatedState.mockCell,
                 updatedState.mockBluetooth && updatedState.canMockBluetooth,
-                updatedState.enableJitter
+                updatedState.enableJitter,
+                selectedPoi = selectedPoiAddress,
+                onDesiredCommitted = {
+                    settingsRepository.lastSpoofedLat = lat.toString()
+                    settingsRepository.lastSpoofedLng = lng.toString()
+                    settingsRepository.isSpoofingActive = true
+                    desiredCommitted = true
+                },
+                onAcceptedStart = {
+                    motionController.onStaticStarted(lat, lng)
+                    _uiState.update { it.copy(isSpoofingActive = true, isSavingConfig = false) }
+                }
             )
-            motionController.onStaticStarted(lat, lng)
+            if (!desiredCommitted) return@launch
 
             // 稍作等待，确保 root shell 完全同步到磁盘
             kotlinx.coroutines.delay(200)
 
             if (updatedState.restartAppsOnSpoof) {
                 restartHookedAppsSilently()
-            }
-
-            _uiState.update {
-                it.copy(isSpoofingActive = true, isSavingConfig = false)
             }
         } finally {
             if (pointConfigurationJob == kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job])
@@ -132,16 +137,16 @@ private suspend fun MainViewModel.restartHookedAppsSilently() {
 
 internal fun MainViewModel.stopSpoofing() {
     settingsRepository.isSpoofingActive = false
+    mapMoveJob?.cancel()
     pointConfigurationJob?.cancel()
     pointConfigurationJob = null
     locationSyncJob?.cancel()
     locationSyncJob = null
     motionController.onStopped()
     viewModelScope.launch {
-        locationRepository.stopSpoofing(context)
-        _uiState.update {
-            it.copy(isSpoofingActive = false, isSavingConfig = false)
-        }
+        locationRepository.stopSpoofing(context, onAcceptedStop = motionController::onStopped)
+        // Offer a new Start only after the previous Stop finishes its cleanup.
+        _uiState.update { it.copy(isSpoofingActive = false, isSavingConfig = false) }
     }
 }
 
