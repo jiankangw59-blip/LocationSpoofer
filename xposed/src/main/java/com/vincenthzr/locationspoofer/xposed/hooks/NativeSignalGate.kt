@@ -105,7 +105,7 @@ internal class NativeSignalGate(
         snapshots.entries(nmea)
 
     private fun refreshProvider(provider: Any) {
-        snapshots.refresh(lock.get(provider), nmeaType.isInstance(provider)) {
+        snapshots.refresh(requireNotNull(lock.get(provider)), nmeaType.isInstance(provider)) {
             (registrations.get(provider) as Map<*, *>).entries.mapNotNull { (key, value) ->
                 if (key !is IBinder || value == null) return@mapNotNull null
                 val listener = listenerField.get(value) ?: return@mapNotNull null

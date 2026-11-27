@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.lang.management.ManagementFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -70,14 +69,22 @@ class NativeSignalSnapshotsTest {
     }
 
     private fun assertBlockedOn(thread: Thread, monitor: Any) {
-        val threads = ManagementFactory.getThreadMXBean()
+        // Android's compile API omits java.lang.management. These unit tests run on the host JDK.
+        val management = Class.forName("java.lang.management.ManagementFactory")
+        val threads = management.getMethod("getThreadMXBean").invoke(null)
+        val getThreadInfo = Class.forName("java.lang.management.ThreadMXBean")
+            .getMethod("getThreadInfo", java.lang.Long.TYPE)
+        val threadInfoType = Class.forName("java.lang.management.ThreadInfo")
+        val getThreadState = threadInfoType.getMethod("getThreadState")
+        val getLockInfo = threadInfoType.getMethod("getLockInfo")
         val deadline = System.nanoTime() + SECONDS.toNanos(5)
         while (System.nanoTime() < deadline) {
-            val info = threads.getThreadInfo(thread.id)
-            if (info?.threadState == Thread.State.BLOCKED) {
-                val lock = checkNotNull(info.lockInfo)
-                assertEquals(monitor.javaClass.name, lock.className)
-                assertEquals(System.identityHashCode(monitor), lock.identityHashCode)
+            val info = getThreadInfo.invoke(threads, thread.id)
+            if (info != null && getThreadState.invoke(info) == Thread.State.BLOCKED) {
+                val lock = checkNotNull(getLockInfo.invoke(info))
+                val lockInfoType = Class.forName("java.lang.management.LockInfo")
+                assertEquals(monitor.javaClass.name, lockInfoType.getMethod("getClassName").invoke(lock))
+                assertEquals(System.identityHashCode(monitor), lockInfoType.getMethod("getIdentityHashCode").invoke(lock))
                 return
             }
             Thread.sleep(1)
