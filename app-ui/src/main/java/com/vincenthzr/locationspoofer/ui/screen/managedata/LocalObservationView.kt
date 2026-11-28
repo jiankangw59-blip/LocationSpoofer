@@ -31,12 +31,10 @@ internal fun rememberLocalHistory(id: Long, pointTimestamp: Long): HistoryRead {
         produceState<HistoryRead>(HistoryRead.Loading) {
             try {
                 val journal = withContext(Dispatchers.IO) { LocalObservationJournal.get(context) }
-                var initial = true
-                journal.changedPoint.collect { change ->
-                    if (initial || change?.first == 0L || change?.first == id) {
-                        initial = false
-                        value = withContext(Dispatchers.IO) { HistoryRead.Ready(journal.snapshot(id, pointTimestamp)) }
-                    }
+                // The StateFlow can conflate changes at several points into one notification.
+                // While this dialog is open, reread only its point even if the last event names another.
+                journal.changedPoint.collect {
+                    value = withContext(Dispatchers.IO) { HistoryRead.Ready(journal.snapshot(id, pointTimestamp)) }
                 }
             } catch (e: CancellationException) {
                 throw e

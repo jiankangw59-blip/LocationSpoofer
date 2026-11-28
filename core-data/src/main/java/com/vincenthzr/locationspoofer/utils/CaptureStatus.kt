@@ -16,6 +16,7 @@ internal data class CaptureWindow(val startUs: Long, val endUs: Long, val endWal
 internal fun captureStatus(read: ScanRead, returnedRows: Int, observed: Int): CaptureStatus = when {
     read == ScanRead.UPDATED && observed > 0 -> CaptureStatus.OBSERVED
     read == ScanRead.UPDATED && returnedRows == 0 -> CaptureStatus.EMPTY
+    read == ScanRead.UPDATED -> CaptureStatus.NOT_UPDATED // Returned rows do not establish when they were observed.
     returnedRows > 0 -> CaptureStatus.CACHED
     read == ScanRead.DENIED -> CaptureStatus.PERMISSION_DENIED
     read == ScanRead.FAILED -> CaptureStatus.FAILED

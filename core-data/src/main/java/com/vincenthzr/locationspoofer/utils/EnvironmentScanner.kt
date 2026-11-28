@@ -359,7 +359,8 @@ class EnvironmentScanner(private val context: Context) {
                 val samples = mutableMapOf<String, Long>()
                 for (item in window) {
                     val t = clock.sampleEpochMs(item.timestampNanos / 1_000L) ?: continue
-                    val address = item.device.address ?: continue
+                    // Optional history must not discard an otherwise completed payload if permissions change here.
+                    val address = try { item.device.address } catch (_: SecurityException) { null } ?: continue
                     samples[address] = maxOf(samples[address] ?: t, t)
                 }
                 onWindowSamples(samples)

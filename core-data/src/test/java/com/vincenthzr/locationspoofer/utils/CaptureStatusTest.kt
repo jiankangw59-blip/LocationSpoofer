@@ -23,8 +23,10 @@ class CaptureStatusTest {
     @Test fun cacheOrFallbackMustNotBecomeObserved() {
         assertEquals(CaptureStatus.CACHED, captureStatus(ScanRead.SNAPSHOT, 1, 0))
         assertEquals(CaptureStatus.CACHED, captureStatus(ScanRead.NOT_UPDATED, 1, 0))
-        assertEquals(CaptureStatus.CACHED, captureStatus(ScanRead.UPDATED, 1, 0))
         assertEquals(CaptureStatus.OBSERVED, captureStatus(ScanRead.UPDATED, 2, 1))
+    }
+    @Test fun successfulCallbackWithoutAValidSampleIsNotProofOfCacheOrFreshness() {
+        assertEquals(CaptureStatus.NOT_UPDATED, captureStatus(ScanRead.UPDATED, 1, 0))
     }
     @Test fun bootTimeOrWallClockAnomaliesCannotInventSampleTime() {
         assertNull(CaptureWindow(0, 50, 5_000).sampleEpochMs(30))
