@@ -354,7 +354,7 @@
     <string name="reselect">重选</string>
     <string name="bookmark">收藏</string>
     <string name="joystick_controlling_active">手柄操控中</string>
-    <string name="cruising_speed_format">巡航中 (%d m/s)</string>
+    <string name="route_current_speed_format">当前速度：%1$.1f m/s</string>
     <string name="route_sim_settings">路线模拟设置</string>
     <string name="run_mode">运行模式</string>
     <string name="loop_auto_cruise">循环自动巡航</string>

@@ -463,7 +463,8 @@ fun RouteTab(
                         },
                     stage = stage,
                     routePoints = routePoints,
-                    uiState = uiState,
+                    runMode = uiState.routeRunMode,
+                    motionState = viewModel.motionController.state,
                     onConfirmPoint = {
                         val tLat = mapController?.cameraTargetLat
                         val tLng = mapController?.cameraTargetLng

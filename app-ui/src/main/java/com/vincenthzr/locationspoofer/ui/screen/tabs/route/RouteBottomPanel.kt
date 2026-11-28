@@ -11,6 +11,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,19 +21,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.ui.R
-import com.vincenthzr.locationspoofer.data.model.AppState
 import com.vincenthzr.locationspoofer.data.model.RoutePlanStage
 import com.vincenthzr.locationspoofer.data.model.RoutePoint
 import com.vincenthzr.locationspoofer.data.model.RouteRunMode
+import com.vincenthzr.locationspoofer.data.motion.MotionController
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
+import kotlinx.coroutines.flow.StateFlow
 
 @Composable
 fun RouteBottomPanel(
     modifier: Modifier,
     stage: RoutePlanStage,
     routePoints: List<RoutePoint>,
-    uiState: AppState,
+    runMode: RouteRunMode,
+    motionState: StateFlow<MotionController.State>,
     onConfirmPoint: () -> Unit,
     onFinishSelecting: () -> Unit,
     onRestartSelecting: () -> Unit,
@@ -217,7 +221,15 @@ fun RouteBottomPanel(
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        text = if (uiState.routeRunMode == RouteRunMode.MANUAL) stringResource(R.string.joystick_controlling_active) else stringResource(R.string.cruising_speed_format, uiState.routeSimMode.speedMs.toInt()),
+                                        text = if (runMode == RouteRunMode.MANUAL) {
+                                            stringResource(R.string.joystick_controlling_active)
+                                        } else {
+                                            val speeds = remember(motionState) {
+                                                motionState.displaySpeeds { it.speedMs }
+                                            }
+                                            val speed = speeds.collectAsState(displaySpeed(motionState.value.speedMs))
+                                            stringResource(R.string.route_current_speed_format, speed.value)
+                                        },
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface

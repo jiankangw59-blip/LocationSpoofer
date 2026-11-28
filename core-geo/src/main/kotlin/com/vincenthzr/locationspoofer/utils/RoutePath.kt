@@ -8,12 +8,23 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+// Longitude inputs are degrees. Keep ordinary city coordinates bit-for-bit unchanged.
+private fun wrapLongitude(degrees: Double): Double {
+    if (degrees in -180.0..180.0) return degrees
+    val wrapped = degrees % 360.0
+    return when {
+        wrapped > 180.0 -> wrapped - 360.0
+        wrapped < -180.0 -> wrapped + 360.0
+        else -> wrapped
+    }
+}
+
 object GeoMath {
     const val EARTH_RADIUS_M = 6378137.0
 
     fun distance(a: LatLng, b: LatLng): Double {
         val dLat = Math.toRadians(b.lat - a.lat)
-        val dLng = Math.toRadians(b.lng - a.lng)
+        val dLng = Math.toRadians(wrapLongitude(b.lng - a.lng))
         val h = sin(dLat / 2).pow(2) + cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLng / 2).pow(2)
         return 2 * EARTH_RADIUS_M * atan2(sqrt(h), sqrt(1 - h))
     }
@@ -22,7 +33,7 @@ object GeoMath {
     fun bearing(from: LatLng, to: LatLng): Float {
         val lat1 = Math.toRadians(from.lat)
         val lat2 = Math.toRadians(to.lat)
-        val dLng = Math.toRadians(to.lng - from.lng)
+        val dLng = Math.toRadians(wrapLongitude(to.lng - from.lng))
         val y = sin(dLng) * cos(lat2)
         val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
         return ((Math.toDegrees(atan2(y, x)) + 360.0) % 360.0).toFloat()
@@ -36,7 +47,7 @@ object GeoMath {
         val lng1 = Math.toRadians(start.lng)
         val lat2 = asin(sin(lat1) * cos(angular) + cos(lat1) * sin(angular) * cos(bearingRad))
         val lng2 = lng1 + atan2(sin(bearingRad) * sin(angular) * cos(lat1), cos(angular) - sin(lat1) * sin(lat2))
-        return LatLng(Math.toDegrees(lat2), Math.toDegrees(lng2))
+        return LatLng(Math.toDegrees(lat2), wrapLongitude(Math.toDegrees(lng2)))
     }
 }
 
@@ -62,14 +73,13 @@ class RoutePath(val points: List<LatLng>) {
         require(isValid) { "route needs at least two distinct points" }
         val traveled = distanceTraveled.coerceAtLeast(0.0)
 
-        if (stopAtDestination && traveled >= totalDistance) {
-            val last = points.last()
-            return Position(last.lat, last.lng, GeoMath.bearing(points[points.size - 2], last), arrived = true)
-        }
-
+        val arrived = stopAtDestination && traveled >= totalDistance
         val forward: Boolean
         val along: Double
-        if (isClosedLoop) {
+        if (arrived) {
+            forward = true
+            along = totalDistance
+        } else if (isClosedLoop) {
             forward = true
             along = traveled % totalDistance
         } else {
@@ -79,16 +89,25 @@ class RoutePath(val points: List<LatLng>) {
             along = if (forward) inCycle else cycle - inCycle
         }
 
-        var seg = 0
-        while (seg < points.size - 2 && cumulative[seg + 1] < along) seg++
-        val from = points[seg]
-        val to = points[seg + 1]
-        val segLen = (cumulative[seg + 1] - cumulative[seg]).coerceAtLeast(0.0001)
-        val ratio = ((along - cumulative[seg]) / segLen).coerceIn(0.0, 1.0)
+        // First segment end at/after the requested distance. A zero-length leg has no heading.
+        // Skip leading duplicates at distance 0; use the incoming leg at exact later waypoints.
+        var low = 1
+        var high = points.lastIndex
+        while (low < high) {
+            val mid = (low + high) ushr 1
+            if (cumulative[mid] == 0.0 || cumulative[mid] < along) low = mid + 1 else high = mid
+        }
+        val from = points[low - 1]
+        val to = points[low]
         val bearing = if (forward) GeoMath.bearing(from, to) else GeoMath.bearing(to, from)
+        if (arrived) return Position(points.last().lat, points.last().lng, bearing, arrived = true)
+        if (along == 0.0) return Position(points.first().lat, points.first().lng, bearing, arrived = false)
+        if (along == cumulative[low]) return Position(to.lat, to.lng, bearing, arrived = false)
+        val ratio = (along - cumulative[low - 1]) / (cumulative[low] - cumulative[low - 1])
+        val deltaLng = wrapLongitude(to.lng - from.lng)
         return Position(
             from.lat + (to.lat - from.lat) * ratio,
-            from.lng + (to.lng - from.lng) * ratio,
+            wrapLongitude(from.lng + deltaLng * ratio),
             bearing,
             arrived = false
         )

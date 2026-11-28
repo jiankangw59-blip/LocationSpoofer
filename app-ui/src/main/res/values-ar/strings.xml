@@ -209,7 +209,7 @@
     <string name="reselect">إعادة الاختيار</string>
     <string name="bookmark">حفظ</string>
     <string name="joystick_controlling_active">التحكم عبر عصا التحكم</string>
-    <string name="cruising_speed_format">تنقل تلقائي (%d م/ث)</string>
+    <string name="route_current_speed_format">السرعة الحالية: %1$.1f م/ث</string>
     <string name="route_sim_settings">إعدادات محاكاة المسار</string>
     <string name="run_mode">وضع التشغيل</string>
     <string name="loop_auto_cruise">تنقل تلقائي حلقي</string>

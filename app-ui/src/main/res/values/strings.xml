@@ -355,7 +355,7 @@
     <string name="reselect">Reselect</string>
     <string name="bookmark">Save</string>
     <string name="joystick_controlling_active">Joystick Controlling</string>
-    <string name="cruising_speed_format">Cruising (%d m/s)</string>
+    <string name="route_current_speed_format">Current speed: %1$.1f m/s</string>
     <string name="route_sim_settings">Route Simulation Settings</string>
     <string name="run_mode">Run Mode</string>
     <string name="loop_auto_cruise">Loop Auto-Cruise</string>
