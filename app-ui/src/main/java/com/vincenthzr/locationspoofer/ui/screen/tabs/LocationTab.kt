@@ -84,6 +84,7 @@ import com.vincenthzr.locationspoofer.viewmodel.setAltitudeVariation
 import com.vincenthzr.locationspoofer.viewmodel.setMapEngine
 import com.vincenthzr.locationspoofer.viewmodel.setMapType
 import com.vincenthzr.locationspoofer.viewmodel.setSatelliteCount
+import com.vincenthzr.locationspoofer.viewmodel.beginPoiSearch
 import com.vincenthzr.locationspoofer.viewmodel.setSearchMode
 import com.vincenthzr.locationspoofer.viewmodel.startSpoofing
 import com.vincenthzr.locationspoofer.viewmodel.stopSpoofing
@@ -120,7 +121,6 @@ fun LocationTab(
     val searchFocusRequester = remember { FocusRequester() }
     val isSearching = spoofingUiState.isSearchActive
     val onIntent = { intent: SpoofingIntent -> viewModel.handleSpoofingIntent(intent) }
-    val searchCacheDurationMs = 30_000L
     var searchBounds by remember { mutableStateOf(Rect.Zero) }
     var searchResultBounds by remember { mutableStateOf(Rect.Zero) }
     var showLocalDataDialog by remember { mutableStateOf(false) }
@@ -167,45 +167,21 @@ fun LocationTab(
     val submitSearch: () -> Unit = {
         focusManager.clearFocus()
         keyboardController?.hide()
-        val now = System.currentTimeMillis()
-        val hasRecentSearchCache =
-            spoofingUiState.searchResults.isNotEmpty() &&
-                    spoofingUiState.cachedSearchQuery == spoofingUiState.searchQuery &&
-                    now - spoofingUiState.cachedSearchAt <= searchCacheDurationMs
-
-        if (hasRecentSearchCache) {
-            onIntent(
-                SpoofingIntent.SetSearchResults(
-                    results = spoofingUiState.searchResults,
-                    show = true,
-                    query = spoofingUiState.searchQuery
-                )
-            )
-        } else if (uiState.searchMode == SearchMode.LOCAL) {
-            coroutineScope.launch {
-                val results = viewModel.performLocalSearch()
-                onIntent(
-                    SpoofingIntent.SetSearchResults(
-                        results = results,
-                        show = true,
-                        query = spoofingUiState.searchQuery
-                    )
-                )
-            }
-        } else if (spoofingUiState.searchQuery.isNotBlank()) {
-            performPoiSearch(
-                context = context,
-                mapEngine = uiState.mapEngine,
-                keyword = spoofingUiState.searchQuery,
-                isDomestic = viewModel.isDomesticEnvironment()
-            ) { results ->
-                onIntent(
-                    SpoofingIntent.SetSearchResults(
-                        results = results.map { it.copy(isOnlineResult = true) },
-                        show = true,
-                        query = spoofingUiState.searchQuery
-                    )
-                )
+        val request = viewModel.beginPoiSearch()
+        if (request != null) {
+            if (request.key.mode == SearchMode.LOCAL) {
+                coroutineScope.launch {
+                    onIntent(SpoofingIntent.SetSearchResults(request, viewModel.performLocalSearch()))
+                }
+            } else {
+                performPoiSearch(
+                    context = context,
+                    mapEngine = request.key.engine,
+                    keyword = request.key.query,
+                    isDomestic = viewModel.isDomesticEnvironment()
+                ) { results ->
+                    onIntent(SpoofingIntent.SetSearchResults(request, results.map { it.copy(isOnlineResult = true) }))
+                }
             }
         }
     }

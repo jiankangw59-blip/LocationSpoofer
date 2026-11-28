@@ -298,11 +298,11 @@ fun performPoiSearch(
                                 val latLng = place.latLng
                                 if (latLng != null) {
                                     resultList.add(
-                                        AppPoiItem(
+                                        googlePlaceItem(
                                             title = place.name ?: prediction.getPrimaryText(null).toString(),
                                             snippet = place.address ?: prediction.getSecondaryText(null).toString(),
-                                            lat = latLng.latitude,
-                                            lng = latLng.longitude
+                                            wgsLat = latLng.latitude,
+                                            wgsLng = latLng.longitude
                                         )
                                     )
                                 }

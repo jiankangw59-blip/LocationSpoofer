@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import com.vincenthzr.locationspoofer.utils.AltitudeModel
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -596,6 +597,7 @@ fun RouteConfigDialog(
 
                 Button(
                     onClick = onStartRoute,
+                    enabled = AltitudeModel.parseBaseMeters(uiState.altitudeInput) != null,
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                     modifier = Modifier

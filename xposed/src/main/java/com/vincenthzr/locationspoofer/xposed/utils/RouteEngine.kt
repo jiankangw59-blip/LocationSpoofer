@@ -93,6 +93,9 @@ object RouteEngine {
         val drift = MotionRealism.Level.fromId(config.optInt("realism_level", MotionRealism.Level.OFF.id)).altitudeAmplitudeM
         val variation = config.optDouble("altitude_variation_m", drift)
         if (variation <= 0.0) return base
+        if (!config.optBoolean("is_route_mode", false) && config.optString("sim_mode") == "STILL") {
+            return AltitudeModel.stationaryAltitude(base, variation, drift, now)
+        }
         val pos = calculateCurrentPosition(config, now)
         return AltitudeModel.altitude(base, variation, drift, pos.lat, pos.lng, now)
     }

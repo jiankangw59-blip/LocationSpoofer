@@ -134,7 +134,9 @@ class SettingsManager(context: Context) {
 
     var altitude: String
         get() = prefs.getString("altitude", "0.0") ?: "0.0"
-        set(value) = prefs.edit().putString("altitude", value).apply()
+        set(value) {
+            if (AltitudeModel.parseBaseMeters(value) != null) prefs.edit().putString("altitude", value).apply()
+        }
 
     /** 海拔相对基准值的最大起伏（±米），0 表示固定海拔 */
     var altitudeVariationM: Int

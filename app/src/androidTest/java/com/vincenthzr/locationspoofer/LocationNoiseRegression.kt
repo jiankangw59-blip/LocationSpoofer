@@ -36,7 +36,8 @@ internal fun SystemFilesInstrumentation.locationNoiseRegression(operation: Strin
                     .put("system_hook_packages", JSONArray().put("com.codex.remoteenvironment.probe"))
                     .put("lat", gcj.lat).put("lng", gcj.lng).put("wgs84_lat", base.lat).put("wgs84_lng", base.lng)
                     .put("enable_jitter", operation.endsWith("on"))
-                    .put("is_route_mode", false).put("sim_mode", "STATIC").put("speed_m_s", 0.0).put("sim_bearing", 0.0)
+                    .put("is_route_mode", false).put("sim_mode", if (operation == "gnss-integrity-prepare") "STILL" else "STATIC")
+                    .put("speed_m_s", 0.0).put("sim_bearing", 0.0)
                     .put("altitude", 25.0).put("altitude_variation_m", if (operation == "gnss-integrity-prepare") 35 else 0)
                     .put("realism_level", if (operation == "gnss-integrity-prepare") 2 else 0)
                     .put("satellite_count", if (operation == "gnss-integrity-prepare") 24 else 10)
@@ -83,11 +84,10 @@ internal fun SystemFilesInstrumentation.locationNoiseRegression(operation: Strin
                 require(samples != null && samples.length <= 65_536)
                 val array = JSONArray(samples)
                 check(array.length() in 4..40)
-                val gcj = CoordinateUtils.wgs84ToGcj02(base.lat, base.lng)
                 var maximumError = 0.0
                 for (index in 0 until array.length()) {
                     val fix = array.getJSONObject(index)
-                    val expected = AltitudeModel.altitude(25.0, 35.0, 3.0, gcj.lat, gcj.lng, fix.getLong("time"))
+                    val expected = AltitudeModel.stationaryAltitude(25.0, 35.0, 3.0, fix.getLong("time"))
                     maximumError = maxOf(maximumError, abs(expected - fix.getDouble("altitude")))
                 }
                 output.putDouble("max_altitude_error_m", maximumError)

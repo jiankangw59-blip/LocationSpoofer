@@ -33,240 +33,120 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 // MainViewModel 的当前位置获取、原生定位回退与模拟能力评估相关扩展函数
 
-// 当前位置获取
+// 当前位置仅由页面显式请求或空输入回填。等待定位期间已经选了别的点，就丢弃迟到结果。
 internal fun MainViewModel.fetchCurrentLocation(ctx: Context, forceCallback: ((Double, Double) -> Unit)? = null) {
+    val start = _uiState.value
+    if (forceCallback == null && start.latitudeInput.isNotEmpty() && start.longitudeInput.isNotEmpty()) return
+    fun notifyUser(message: Int) {
+        if (forceCallback != null) android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
     viewModelScope.launch(Dispatchers.Main) {
-        val client = try {
-            AMapLocationClient(ctx.applicationContext)
-        } catch (e: Exception) {
-            fallbackToNativeLocation(ctx, forceCallback, true)
-            return@launch
+        val amap = fetchAmapPoint(ctx)
+        val result = amap ?: try {
+            fetchNativePoint(ctx) { notifyUser(R.string.waiting_gps_signal) }
+        } catch (_: SecurityException) {
+            notifyUser(R.string.location_permission_denied)
+            null
         }
-        client.setLocationOption(AMapLocationClientOption().apply {
-            locationMode = AMapLocationClientOption.AMapLocationMode.Hight_Accuracy
-            isOnceLocation = true
-            isNeedAddress = false // 禁用逆地理编码，防止因未开通Web服务导致 SERVICE_NOT_EXIST 鉴权错误
-        })
-        client.setLocationListener { loc ->
-            if (loc != null && loc.errorCode == 0) {
-                if (_uiState.value.longitudeInput.isEmpty() || _uiState.value.latitudeInput.isEmpty() || forceCallback != null) {
-                    _uiState.update {
-                        it.copy(
-                            latitudeInput = String.format("%.6f", loc.latitude),
-                            longitudeInput = String.format("%.6f", loc.longitude),
-                            showCoordinateError = false,
-                            locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
-                                feedback.matchesPoint(loc.latitude, loc.longitude)
-                            }
-                        )
-                    }
-                    forceCallback?.invoke(loc.latitude, loc.longitude)
-                }
-            } else {
-                // 如果鉴权失败(如 SERVICE_NOT_EXIST)或其他错误，回退到原生定位
-                fallbackToNativeLocation(ctx, forceCallback, true)
-            }
-            client.stopLocation()
-            client.onDestroy()
+        val (lat, lng) = result ?: return@launch
+        while (true) {
+            val state = _uiState.value
+            if (state.latitudeInput != start.latitudeInput || state.longitudeInput != start.longitudeInput ||
+                state.isSpoofingActive != start.isSpoofingActive) return@launch
+            val next = state.copy(latitudeInput = coordinateInputText(lat), longitudeInput = coordinateInputText(lng),
+                showCoordinateError = false, locationLookupFeedback = state.locationLookupFeedback?.takeIf { it.matchesPoint(lat, lng) })
+            if (_uiState.compareAndSet(state, next)) break
         }
-        client.startLocation()
+        if (amap == null) notifyUser(R.string.native_location_success)
+        forceCallback?.invoke(lat, lng)
     }
 }
 
-@android.annotation.SuppressLint("MissingPermission")
+internal suspend fun MainViewModel.fetchRealLocationSilent(ctx: Context): Pair<Double, Double>? =
+    fetchAmapPoint(ctx) ?: try { fetchNativePoint(ctx) } catch (_: SecurityException) { null }
 
-private fun MainViewModel.fallbackToNativeLocation(
-    ctx: Context,
-    forceCallback: ((Double, Double) -> Unit)?,
-    convertToGcj: Boolean
-) {
+private suspend fun fetchAmapPoint(ctx: Context): Pair<Double, Double>? = withTimeoutOrNull(15_000) {
+    val client = try { AMapLocationClient(ctx.applicationContext) } catch (_: Exception) { return@withTimeoutOrNull null }
     try {
-        val locationManager =
-            ctx.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
-        val provider =
-            if (locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)) {
-                android.location.LocationManager.NETWORK_PROVIDER
-            } else {
-                android.location.LocationManager.GPS_PROVIDER
-            }
-
-        val lastLoc = locationManager.getLastKnownLocation(provider)
-        if (lastLoc != null) {
-            applyNativeLocation(ctx, lastLoc, forceCallback, convertToGcj)
-        } else if (forceCallback != null) {
-            android.widget.Toast.makeText(
-                ctx,
-                ctx.getString(com.vincenthzr.locationspoofer.ui.R.string.waiting_gps_signal),
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        }
-
-        val listener = object : android.location.LocationListener {
-            override fun onLocationChanged(location: android.location.Location) {
-                if (forceCallback != null) {
-                    android.widget.Toast.makeText(
-                        ctx,
-                        ctx.getString(com.vincenthzr.locationspoofer.ui.R.string.native_location_success),
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
-                applyNativeLocation(ctx, location, forceCallback, convertToGcj)
-                locationManager.removeUpdates(this)
-            }
-
-            override fun onStatusChanged(
-                provider: String?,
-                status: Int,
-                extras: android.os.Bundle?
-            ) {
-            }
-
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-        }
-        locationManager.requestSingleUpdate(
-            provider,
-            listener,
-            android.os.Looper.getMainLooper()
-        )
-    } catch (e: SecurityException) {
-        if (forceCallback != null) {
-            android.widget.Toast.makeText(
-                ctx,
-                ctx.getString(com.vincenthzr.locationspoofer.ui.R.string.location_permission_denied),
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-}
-
-private fun MainViewModel.applyNativeLocation(
-    ctx: Context,
-    location: android.location.Location,
-    forceCallback: ((Double, Double) -> Unit)?,
-    convertToGcj: Boolean
-) {
-    var finalLat = location.latitude
-    var finalLng = location.longitude
-
-    if (convertToGcj) {
-        val converter = com.amap.api.maps.CoordinateConverter(ctx).apply {
-            from(com.amap.api.maps.CoordinateConverter.CoordType.GPS)
-            coord(com.amap.api.maps.model.LatLng(location.latitude, location.longitude))
-        }
-        val gcj = converter.convert()
-        finalLat = gcj.latitude
-        finalLng = gcj.longitude
-    }
-
-    if (_uiState.value.longitudeInput.isEmpty() || _uiState.value.latitudeInput.isEmpty() || forceCallback != null) {
-        _uiState.update {
-            it.copy(
-                latitudeInput = String.format("%.6f", finalLat),
-                longitudeInput = String.format("%.6f", finalLng),
-                showCoordinateError = false,
-                locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
-                    feedback.matchesPoint(finalLat, finalLng)
-                }
-            )
-        }
-        forceCallback?.invoke(finalLat, finalLng)
-    }
-}
-
-internal suspend fun MainViewModel.fetchRealLocationSilent(ctx: Context): Pair<Double, Double>? {
-    val amapResult = withTimeoutOrNull(15_000) {
         suspendCancellableCoroutine<Pair<Double, Double>?> { cont ->
-            val client = try {
-                AMapLocationClient(ctx.applicationContext)
-            } catch (error: Exception) {
-                cont.resume(null)
-                return@suspendCancellableCoroutine
-            }
-            fun closeClient() {
-                runCatching { client.stopLocation(); client.onDestroy() }
-            }
-            cont.invokeOnCancellation { closeClient() }
             client.setLocationOption(AMapLocationClientOption().apply {
                 locationMode = AMapLocationClientOption.AMapLocationMode.Hight_Accuracy
                 isOnceLocation = true
                 isNeedAddress = false
             })
-            client.setLocationListener { location ->
-                closeClient()
-                if (cont.isActive) {
-                    cont.resume(if (location != null && location.errorCode == 0) {
-                        location.latitude to location.longitude
-                    } else null)
-                }
+            client.setLocationListener { loc ->
+                if (cont.isActive) cont.resume(if (loc != null && loc.errorCode == 0 &&
+                    validCurrentCoordinates(loc.latitude, loc.longitude)) loc.latitude to loc.longitude else null)
             }
-            if (cont.isActive) client.startLocation() else closeClient()
+            if (cont.isActive) client.startLocation()
         }
+    } catch (cancel: kotlinx.coroutines.CancellationException) {
+        throw cancel
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { client.stopLocation() }
+        runCatching { client.onDestroy() }
     }
-    return amapResult ?: fallbackToNativeLocationSilent(ctx, true)
 }
+
+private fun android.location.Location.asNativeFix() = NativeCurrentFix(latitude, longitude, elapsedRealtimeNanos)
+
+private suspend fun fetchNativePoint(ctx: Context, waiting: () -> Unit = {}): Pair<Double, Double>? =
+    try {
+        readNativePoint(ctx, waiting)
+    } catch (cancel: kotlinx.coroutines.CancellationException) {
+        throw cancel
+    } catch (denied: SecurityException) {
+        throw denied // Interactive callers show the permission error; silent callers return no fix.
+    } catch (_: RuntimeException) {
+        null // Providers or the SDK converter may disappear/fail during a one-shot request.
+    }
 
 @android.annotation.SuppressLint("MissingPermission")
-private suspend fun MainViewModel.fallbackToNativeLocationSilent(
-    ctx: Context,
-    convertToGcj: Boolean
-): Pair<Double, Double>? = withTimeoutOrNull(5_000) {
-    suspendCancellableCoroutine { cont ->
-        val locationManager = ctx.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+private suspend fun readNativePoint(ctx: Context, waiting: () -> Unit): Pair<Double, Double>? {
+    val manager = ctx.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+    val providers = listOf(android.location.LocationManager.NETWORK_PROVIDER, android.location.LocationManager.GPS_PROVIDER)
+        .filter { manager.isProviderEnabled(it) }
+    val provider = providers.firstOrNull() ?: return null
+    val candidates = providers.mapNotNull {
+        try { manager.getLastKnownLocation(it)?.asNativeFix() }
+        catch (_: IllegalArgumentException) { null } // A provider may disappear between calls.
+        catch (_: SecurityException) { null } // An otherwise accessible provider can still supply the fix.
+    }
+    val cached = newestFreshNativeFix(candidates, android.os.SystemClock.elapsedRealtimeNanos())
+    val fix = cached ?: run {
+        waiting()
         var listener: android.location.LocationListener? = null
-        cont.invokeOnCancellation { listener?.let { runCatching { locationManager.removeUpdates(it) } } }
         try {
-            val provider = when {
-                locationManager.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER) -> android.location.LocationManager.NETWORK_PROVIDER
-                locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) -> android.location.LocationManager.GPS_PROVIDER
-                else -> {
-                    cont.resume(null)
-                    return@suspendCancellableCoroutine
+            withTimeoutOrNull(5_000) {
+                suspendCancellableCoroutine<NativeCurrentFix?> { cont ->
+                    val callback = object : android.location.LocationListener {
+                        override fun onLocationChanged(location: android.location.Location) {
+                            if (cont.isActive) cont.resume(location.asNativeFix().takeIf {
+                                it.isFreshAt(android.os.SystemClock.elapsedRealtimeNanos())
+                            })
+                        }
+                        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
+                    }
+                    listener = callback
+                    if (cont.isActive) manager.requestSingleUpdate(provider, callback, android.os.Looper.getMainLooper())
                 }
             }
-            val lastLocation = locationManager.getLastKnownLocation(provider)
-            if (lastLocation != null) {
-                cont.resume(getNativeConverted(ctx, lastLocation, convertToGcj))
-                return@suspendCancellableCoroutine
-            }
-            val callback = object : android.location.LocationListener {
-                override fun onLocationChanged(location: android.location.Location) {
-                    locationManager.removeUpdates(this)
-                    if (cont.isActive) cont.resume(getNativeConverted(ctx, location, convertToGcj))
-                }
-                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
-                override fun onProviderEnabled(provider: String) {}
-                override fun onProviderDisabled(provider: String) {}
-            }
-            listener = callback
-            locationManager.requestSingleUpdate(provider, callback, android.os.Looper.getMainLooper())
-            if (!cont.isActive) locationManager.removeUpdates(callback)
-        } catch (error: Exception) {
-            listener?.let { runCatching { locationManager.removeUpdates(it) } }
-            if (cont.isActive) cont.resume(null)
+        } catch (_: IllegalArgumentException) {
+            null
+        } finally {
+            listener?.let { runCatching { manager.removeUpdates(it) } }
         }
-    }
-}
-
-private fun MainViewModel.getNativeConverted(
-    ctx: Context,
-    location: android.location.Location,
-    convertToGcj: Boolean
-): Pair<Double, Double> {
-    var finalLat = location.latitude
-    var finalLng = location.longitude
-    if (convertToGcj) {
-        val converter = com.amap.api.maps.CoordinateConverter(ctx).apply {
-            from(com.amap.api.maps.CoordinateConverter.CoordType.GPS)
-            coord(com.amap.api.maps.model.LatLng(location.latitude, location.longitude))
-        }
-        val gcj = converter.convert()
-        finalLat = gcj.latitude
-        finalLng = gcj.longitude
-    }
-    return Pair(finalLat, finalLng)
+    } ?: return null
+    val converted = com.amap.api.maps.CoordinateConverter(ctx).apply {
+        from(com.amap.api.maps.CoordinateConverter.CoordType.GPS)
+        coord(com.amap.api.maps.model.LatLng(fix.lat, fix.lng))
+    }.convert() ?: return null
+    return if (validCurrentCoordinates(converted.latitude, converted.longitude))
+        converted.latitude to converted.longitude else null
 }
 
 // 坐标输入

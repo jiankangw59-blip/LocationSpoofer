@@ -21,7 +21,8 @@ data class SpoofingUiState(
     val searchQuery: String = "",
     val searchResults: List<AppPoiItem> = emptyList(),
     val showSearchResults: Boolean = false,
-    val cachedSearchQuery: String = "",
+    val cachedSearchKey: PoiSearchKey? = null,
+    val pendingSearch: PoiSearchRequest? = null,
     val cachedSearchAt: Long = 0L,
 
     // 通知 / 错误

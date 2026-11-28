@@ -127,8 +127,8 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
     }
     _uiState.update {
         it.copy(
-            latitudeInput = String.format("%.6f", lat),
-            longitudeInput = String.format("%.6f", lng),
+            latitudeInput = coordinateInputText(lat),
+            longitudeInput = coordinateInputText(lng),
             mapConfirmedPoint = Pair(lat, lng),
             showCoordinateError = false,
             isSavingConfig = if (samePoint) it.isSavingConfig else false
@@ -329,8 +329,8 @@ private fun MainViewModel.startSimulationWithPoints(pointsToRun: List<RoutePoint
 
     _uiState.update {
         it.copy(
-            latitudeInput = String.format("%.6f", startPoint.lat),
-            longitudeInput = String.format("%.6f", startPoint.lng),
+            latitudeInput = coordinateInputText(startPoint.lat),
+            longitudeInput = coordinateInputText(startPoint.lng),
             routePlanStage = RoutePlanStage.RUNNING,
             routePoints = pointsToRun
         )
@@ -532,8 +532,8 @@ internal fun MainViewModel.loadSavedLocation(loc: SavedLocation) {
     val wifiCount = parseWifiCount(loc.wifiJson)
     _uiState.update {
         it.copy(
-            latitudeInput = String.format(java.util.Locale.US, "%.6f", loc.lat),
-            longitudeInput = String.format(java.util.Locale.US, "%.6f", loc.lng),
+            latitudeInput = coordinateInputText(loc.lat),
+            longitudeInput = coordinateInputText(loc.lng),
             locationLookupFeedback = it.locationLookupFeedback?.takeIf { feedback ->
                 feedback.matchesPoint(loc.lat, loc.lng)
             },
@@ -605,8 +605,8 @@ internal fun MainViewModel.observeMotionController() {
 private fun MainViewModel.updatePosition(lat: Double, lng: Double, bearing: Float) {
     _uiState.update {
         it.copy(
-            latitudeInput = String.format("%.6f", lat),
-            longitudeInput = String.format("%.6f", lng),
+            latitudeInput = coordinateInputText(lat),
+            longitudeInput = coordinateInputText(lng),
             simBearing = bearing,
             showCoordinateError = false
         )

@@ -17,6 +17,11 @@ import com.vincenthzr.locationspoofer.data.model.SearchMode
 import com.vincenthzr.locationspoofer.data.state.SpoofingState
 import com.vincenthzr.locationspoofer.ui.screen.AppPoiItem
 import com.vincenthzr.locationspoofer.ui.screen.spoofing.SpoofingIntent
+import com.vincenthzr.locationspoofer.ui.screen.spoofing.PoiSearchKey
+import com.vincenthzr.locationspoofer.ui.screen.spoofing.PoiSearchRequest
+import com.vincenthzr.locationspoofer.ui.screen.spoofing.beginSearch
+import com.vincenthzr.locationspoofer.ui.screen.spoofing.completeSearch
+import kotlinx.coroutines.flow.updateAndGet
 import com.vincenthzr.locationspoofer.utils.XposedModuleStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -206,6 +211,9 @@ internal fun MainViewModel.setMapType(type: AppMapType) {
 }
 
 internal fun MainViewModel.setMapEngine(engine: MapEngine) {
+    if (_uiState.value.mapEngine != engine) {
+        _spoofingUiState.update { it.copy(showSearchResults = false, pendingSearch = null) }
+    }
     settingsRepository.setMapEngine(engine.name)
     _uiState.update { it.copy(mapEngine = engine) }
 }
@@ -303,7 +311,20 @@ internal fun MainViewModel.confirmRestartHookedApps(onDone: (Int) -> Unit = {}) 
 }
 
 internal fun MainViewModel.setSearchMode(mode: SearchMode) {
+    if (_uiState.value.searchMode != mode) {
+        _spoofingUiState.update { it.copy(showSearchResults = false, pendingSearch = null) }
+    }
     _uiState.update { it.copy(searchMode = mode) }
+}
+
+/** A cache hit only reveals the existing list; only a completed lookup renews its timestamp. */
+internal fun MainViewModel.beginPoiSearch(): PoiSearchRequest? {
+    val state = _uiState.value
+    val query = _spoofingUiState.value.searchQuery
+    if (state.searchMode != SearchMode.LOCAL && query.isBlank()) return null
+    val request = PoiSearchRequest(PoiSearchKey(query, state.searchMode, state.mapEngine))
+    val now = android.os.SystemClock.elapsedRealtime()
+    return request.takeIf { _spoofingUiState.updateAndGet { it.beginSearch(request, now) }.pendingSearch === request }
 }
 
 internal suspend fun MainViewModel.performLocalSearch(): List<AppPoiItem> {
@@ -708,17 +729,19 @@ internal fun MainViewModel.handleSpoofingIntent(intent: SpoofingIntent) {
 
         is SpoofingIntent.SetSearchActive -> {
             if (intent.active) dismissLocationLookup()
-            _spoofingUiState.update { it.copy(isSearchActive = intent.active) }
+            _spoofingUiState.update {
+                if (intent.active) it.copy(isSearchActive = true)
+                else it.copy(isSearchActive = false, showSearchResults = false, pendingSearch = null)
+            }
         }
 
         SpoofingIntent.HideSearchResults -> _spoofingUiState.update {
-            it.copy(showSearchResults = false)
+            it.copy(showSearchResults = false, pendingSearch = null)
         }
 
         is SpoofingIntent.UpdateSearchQuery -> _spoofingUiState.update {
-            it.copy(
-                searchQuery = intent.query
-            )
+            if (intent.query == it.searchQuery) it
+            else it.copy(searchQuery = intent.query, showSearchResults = false, pendingSearch = null)
         }
 
         is SpoofingIntent.PerformSearch -> {
@@ -727,19 +750,15 @@ internal fun MainViewModel.handleSpoofingIntent(intent: SpoofingIntent) {
 
         is SpoofingIntent.ClearSearchResults -> _spoofingUiState.update {
             it.copy(
-                searchResults = emptyList(),
+                searchResults = emptyList(), cachedSearchKey = null, pendingSearch = null,
                 showSearchResults = false
             )
         }
 
         is SpoofingIntent.SetSearchResults -> _spoofingUiState.update {
-            val query = intent.query.ifBlank { it.searchQuery }
-            it.copy(
-                searchResults = intent.results,
-                showSearchResults = intent.show,
-                cachedSearchQuery = if (intent.results.isNotEmpty()) query else it.cachedSearchQuery,
-                cachedSearchAt = if (intent.results.isNotEmpty()) System.currentTimeMillis() else it.cachedSearchAt
-            )
+            val state = _uiState.value
+            it.completeSearch(intent.request, PoiSearchKey(it.searchQuery, state.searchMode, state.mapEngine),
+                intent.results, android.os.SystemClock.elapsedRealtime())
         }
 
         is SpoofingIntent.ConfirmMapPoint -> {

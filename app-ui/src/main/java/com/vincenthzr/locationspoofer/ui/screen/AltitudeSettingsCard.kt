@@ -42,7 +42,7 @@ fun AltitudeSettingsCard(
 ) {
     var slider by remember(variationM) { mutableFloatStateOf(variationM.toFloat()) }
     val range = slider.toInt()
-    val base = altitudeInput.toDoubleOrNull()
+    val base = AltitudeModel.parseBaseMeters(altitudeInput)
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -86,6 +86,10 @@ fun AltitudeSettingsCard(
 
             OutlinedTextField(
                 value = altitudeInput,
+                isError = base == null,
+                supportingText = if (base == null) {
+                    { Text(stringResource(R.string.invalid_target_altitude)) }
+                } else null,
                 onValueChange = onAltitudeChange,
                 label = { Text(stringResource(R.string.altitude_meter), fontSize = 12.sp) },
                 modifier = Modifier.fillMaxWidth(),

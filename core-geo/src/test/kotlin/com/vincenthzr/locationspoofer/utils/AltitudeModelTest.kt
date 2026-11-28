@@ -6,6 +6,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AltitudeModelTest {
+    @Test
+    fun incompleteOrNonFiniteInputIsNotSeaLevel() {
+        for (s in listOf("", "-", ".", "NaN", "Infinity", "-Infinity", "1e999")) {
+            org.junit.Assert.assertNull(s, AltitudeModel.parseBaseMeters(s))
+        }
+        assertEquals(-12.5, AltitudeModel.parseBaseMeters("-12.5")!!, 0.0)
+        assertEquals(0.0, AltitudeModel.parseBaseMeters("0")!!, 0.0)
+    }
+
 
     private val start = CoordinateUtils.LatLng(23.1066, 113.3245)
     private val t0 = 1_789_398_037_217L

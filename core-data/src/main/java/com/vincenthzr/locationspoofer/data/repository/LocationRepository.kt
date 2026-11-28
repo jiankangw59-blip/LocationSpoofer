@@ -16,6 +16,7 @@ import com.vincenthzr.locationspoofer.utils.ConfigManager
 import com.vincenthzr.locationspoofer.utils.LSPosedManager
 import com.vincenthzr.locationspoofer.utils.RootManager
 import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
+import com.vincenthzr.locationspoofer.utils.AltitudeModel
 import com.vincenthzr.locationspoofer.utils.SettingsManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -140,7 +141,7 @@ class LocationRepository(
         // 导致"模拟一次后关闭再开就再也无法模拟"。
         rootManager.grantMockLocation()
 
-        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
+        val alt = AltitudeModel.parseBaseMeters(settingsManager.altitude) ?: 0.0
         val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         configManager.saveConfig(
             lat,
@@ -293,7 +294,7 @@ class LocationRepository(
         onDesiredCommitted: (() -> Unit)? = null,
         onAcceptedPosition: (() -> Unit)? = null
     ) {
-        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0
+        val alt = AltitudeModel.parseBaseMeters(settingsManager.altitude) ?: 0.0
         val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         configManager.saveConfig(
             lat,
@@ -370,7 +371,7 @@ class LocationRepository(
             appCoordinateSystems = appCoordinateSystems,
             cellJson = SpoofingState.cellJson,
             bluetoothJson = SpoofingState.bluetoothJson,
-            altitude = settingsManager.altitude.toDoubleOrNull() ?: 0.0,
+            altitude = AltitudeModel.parseBaseMeters(settingsManager.altitude) ?: 0.0,
             satelliteCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
         )
     }

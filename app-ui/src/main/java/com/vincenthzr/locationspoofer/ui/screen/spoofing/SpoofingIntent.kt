@@ -21,9 +21,8 @@ sealed class SpoofingIntent {
     data object HideSearchResults : SpoofingIntent()
     data class ClearSearchResults(val clearAll: Boolean = false) : SpoofingIntent()
     data class SetSearchResults(
-        val results: List<com.vincenthzr.locationspoofer.ui.screen.AppPoiItem>,
-        val show: Boolean,
-        val query: String = ""
+        val request: PoiSearchRequest,
+        val results: List<com.vincenthzr.locationspoofer.ui.screen.AppPoiItem>
     ) : SpoofingIntent()
 
     // 地图操作

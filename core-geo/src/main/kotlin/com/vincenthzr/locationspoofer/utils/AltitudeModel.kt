@@ -18,6 +18,9 @@ import kotlin.math.sin
  */
 object AltitudeModel {
 
+    /** Empty/unfinished drafts and non-finite values are not elevations. Zero and negative values are valid. */
+    fun parseBaseMeters(text: String): Double? = text.toDoubleOrNull()?.takeIf { it.isFinite() }
+
     const val DEFAULT_VARIATION_M = 10
     const val MAX_VARIATION_M = 100
 
@@ -72,6 +75,16 @@ object AltitudeModel {
         return Terrain(minWavelength).also { cachedTerrain = amplitudeM to it }
     }
 
+    private fun driftAmplitude(rangeM: Double, driftM: Double) =
+        min(driftM.coerceAtLeast(0.0), rangeM / 2)
+
+    /** A known stationary height is already the anchor; only receiver error varies with time. */
+    fun stationaryAltitude(baseM: Double, variationM: Double, driftM: Double, epochMs: Long): Double {
+        val amplitude = driftAmplitude(variationM.coerceIn(0.0, MAX_VARIATION_M.toDouble()), driftM)
+        if (amplitude == 0.0) return baseM
+        return baseM + amplitude * drift.value(epochMs / 1000.0)
+    }
+
     /**
      * @param variationM 相对基准海拔的最大偏差（米），0 表示固定海拔
      * @param driftM 随时间漂移的幅度（米，来自运动真实度档位），会被限制在变化范围的一半以内
@@ -79,7 +92,7 @@ object AltitudeModel {
     fun altitude(baseM: Double, variationM: Double, driftM: Double, lat: Double, lng: Double, epochMs: Long): Double {
         val range = variationM.coerceIn(0.0, MAX_VARIATION_M.toDouble())
         if (range <= 0.0) return baseM
-        val driftAmp = min(driftM.coerceAtLeast(0.0), range / 2)
+        val driftAmp = driftAmplitude(range, driftM)
         val terrainAmp = range - driftAmp
         val x = lng * METERS_PER_DEG_LNG * cos(lat * PI / 180)
         val y = lat * METERS_PER_DEG_LAT

@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.xposed.utils
 
+import com.vincenthzr.locationspoofer.utils.AltitudeModel
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -154,6 +155,43 @@ class RouteEngineTest {
         assertEquals(paused.lat, resumed.lat, 1e-9)
         val later = RouteEngine.calculateCurrentPosition(cfg(200.0, 500_000L), now = 510_000L)
         assertEquals(220.0 / 111_320.0, later.lat, 2e-6)
+    }
+
+    @Test
+    fun `stationary altitude stays anchored to a known height instead of synthetic terrain`() {
+        val cfg = JSONObject().put("sim_mode", "STILL").put("is_route_mode", false)
+            .put("altitude", -12.5).put("altitude_variation_m", 35.0)
+        val times = (0..600 step 5).map { 1_000_000L + it * 1000L }
+        fun at(lat: Double, lng: Double) = times.map {
+            RouteEngine.realisticAltitude(cfg.put("lat", lat).put("lng", lng), now = it)
+        }
+        // Off means no receiver error. It should not shift a known point several metres.
+        assertTrue(at(31.5, 120.5).all { it == -12.5 })
+        cfg.put("realism_level", 2).put("altitude_variation_m", 2.0)
+        val drift = at(31.5, 120.5)
+        assertEquals(drift, at(-25.0, -170.0))
+        assertTrue(drift.all { it in -13.5..-11.5 })
+        assertTrue(drift.distinct().size > 1)
+        cfg.put("altitude_variation_m", 0.0)
+        assertTrue(at(31.5, 120.5).all { it == -12.5 })
+    }
+
+    @Test
+    fun `only explicit non route STILL changes elevation policy`() {
+        val now = 2_000_000L
+        val cfg = joystickConfig(0.0, 0.0, now).put("altitude", 80.0)
+            .put("altitude_variation_m", 35.0).put("realism_level", 2)
+        fun checkTerrain() {
+            val position = RouteEngine.calculateCurrentPosition(cfg, now)
+            val expected = AltitudeModel.altitude(80.0, 35.0, 3.0, position.lat, position.lng, now)
+            assertEquals(expected, RouteEngine.realisticAltitude(cfg, now), 0.0)
+        }
+        checkTerrain() // A released joystick remains joystick mode.
+        cfg.remove("sim_mode")
+        checkTerrain() // Existing config without a mode.
+        cfg.put("sim_mode", "STILL").put("is_route_mode", true)
+            .put("route_points", pointsJson(31.5 to 120.5, 31.52 to 120.5))
+        checkTerrain()
     }
 
     @Test

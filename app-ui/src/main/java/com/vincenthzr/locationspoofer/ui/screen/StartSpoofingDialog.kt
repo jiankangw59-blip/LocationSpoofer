@@ -7,6 +7,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import com.vincenthzr.locationspoofer.utils.AltitudeModel
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -235,6 +236,7 @@ fun StartSpoofingDialog(
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = onConfirm,
+                        enabled = AltitudeModel.parseBaseMeters(uiState.altitudeInput) != null,
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
                     ) {

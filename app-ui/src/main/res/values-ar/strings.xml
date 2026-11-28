@@ -328,7 +328,8 @@
     <string name="nationwide">على مستوى البلاد</string>
     <string name="saved_locations_count_format">تم حفظ %d موقع مفضل</string>
     <string name="map_save_location_hint">حدد نقطة على الخريطة واضغط حفظ لتفضيل الأماكن</string>
-    <string name="altitude_meter">الارتفاع (متر)</string>
+    <string name="altitude_meter">الارتفاع عن إهليلج WGS84 (متر)</string>
+    <string name="altitude_variation_desc">أدخل الارتفاع عن إهليلج WGS84، وليس الارتفاع عن سطح البحر. في الموقع الثابت قد تتذبذب القراءة قليلاً حول القيمة المدخلة؛ وعند ضبط النطاق على صفر تبقى ثابتة تماماً. في وضع الحركة تُحاكى التضاريس ولا تُقاس.</string>
     <string name="satellite_count">عدد الأقمار الصناعية</string>
     <string name="tag_bluetooth">بلوتوث</string>
     <string name="tag_cell">برج</string>
@@ -449,4 +450,5 @@
     <string name="collection_stopping">جارٍ إنهاء الجمع…</string>
     <string name="collection_no_saved_points">لم يتم حفظ أي نقاط. تحقق من الموقع وأذونات الجمع ثم حاول مجددًا.</string>
     <string name="collection_info_save_failed">تعذر حفظ تفاصيل النقطة. حاول مجددًا.</string>
+    <string name="invalid_target_altitude">أدخل ارتفاعًا محدودًا بالأمتار، مثل ‎-12.5 أو 0.</string>
 </resources>
