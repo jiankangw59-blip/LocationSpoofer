@@ -236,7 +236,7 @@ fun ScannerMapScreen(
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    RadioCaptureStatusText(uiState.lastWifiCaptureStatus, uiState.lastCellCaptureStatus)
+                    RadioCaptureStatusText(uiState.lastWifiCaptureReport, uiState.lastCellCaptureReport)
                     BleObservationStatusText(uiState.lastBleScanStatus)
                 }
             }

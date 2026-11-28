@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
+import com.vincenthzr.locationspoofer.data.model.RadioCaptureReport
 import com.vincenthzr.locationspoofer.utils.LocalObservationJournal
 import com.vincenthzr.locationspoofer.utils.ObservationKind
 import com.vincenthzr.locationspoofer.utils.SavedCellObservations
@@ -261,8 +262,8 @@ internal fun MainViewModel.toggleContinuousScanning() {
             scannedWifiCount = 0,
             scannedCellCount = 0,
             scannedBluetoothCount = 0,
-            lastWifiCaptureStatus = null,
-            lastCellCaptureStatus = null,
+            lastWifiCaptureReport = null,
+            lastCellCaptureReport = null,
             lastBleScanStatus = null
         )
     }
@@ -315,8 +316,8 @@ internal fun MainViewModel.toggleContinuousScanning() {
                                 scannedWifiCount = it.scannedWifiCount + wCount,
                                 scannedCellCount = it.scannedCellCount + cCount,
                                 scannedBluetoothCount = it.scannedBluetoothCount + ble.count,
-                                lastWifiCaptureStatus = wifi.status,
-                                lastCellCaptureStatus = cell.status,
+                                lastWifiCaptureReport = RadioCaptureReport(wifi.refreshOutcome, wifi.status),
+                                lastCellCaptureReport = RadioCaptureReport(cell.refreshOutcome, cell.status),
                                 lastBleScanStatus = ble.status
                             )
                         }

@@ -264,7 +264,7 @@ fun DataCollectionAssistScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                RadioCaptureStatusText(uiState.lastWifiCaptureStatus, uiState.lastCellCaptureStatus)
+                RadioCaptureStatusText(uiState.lastWifiCaptureReport, uiState.lastCellCaptureReport)
                 BleObservationStatusText(uiState.lastBleScanStatus)
                 Text(
                     text = stringResource(R.string.data_collection_assist_hint),

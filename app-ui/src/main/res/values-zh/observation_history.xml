@@ -2,15 +2,15 @@
 <resources>
     <string name="obs_total_wifi">Wi-Fi 累计 %1$d 条</string>
     <string name="obs_total_cell">基站累计 %1$d 条</string>
-    <string name="obs_wifi_result">Wi-Fi 扫描：%1$s</string>
-    <string name="obs_cell_result">基站扫描：%1$s</string>
+    <string name="obs_wifi_result">Wi-Fi：%1$s</string>
+    <string name="obs_cell_result">基站：%1$s</string>
     <string name="obs_waiting">尚未记录本轮结果</string>
     <string name="obs_received">本轮收到新观测</string>
-    <string name="obs_empty">已完成，未收到观测</string>
+    <string name="obs_empty">返回记录为空</string>
     <string name="obs_cached">缓存记录，不算本轮新观测</string>
-    <string name="obs_not_updated">未确认有新结果</string>
-    <string name="obs_denied">缺少权限</string>
-    <string name="obs_failed">未能完成</string>
+    <string name="obs_not_updated">未能确认本轮新观测</string>
+    <string name="obs_denied">权限不足，无法读取</string>
+    <string name="obs_failed">未能读取结果</string>
     <string name="obs_unknown_time">已保存条目 · 本机观测时间未知</string>
     <string name="obs_latest_time">最近一次已保存轮次的标识 · 观测于 %1$s</string>
     <string name="obs_prior_time">较早轮次的标识 · 上次观测于 %1$s</string>
@@ -23,4 +23,12 @@
     <string name="obs_time_legend">标识的本机观测时间按设备时间戳换算，不代表条目中每个参数都是该次实测。</string>
     <string name="obs_no_round">该点没有可对应的本机采集轮次；已保存或导入的数据不等于本机观测。</string>
     <string name="obs_filter">仅看最近一次已保存轮次的标识</string>
+    <string name="refresh_and_data">刷新：%1$s；数据：%2$s</string>
+    <string name="refresh_not_requested">未发起</string>
+    <string name="refresh_completed">收到更新通知</string>
+    <string name="refresh_not_confirmed">未确认更新</string>
+    <string name="refresh_local_cooldown">本机请求间隔内，未再发起</string>
+    <string name="refresh_timed_out">等待超时</string>
+    <string name="refresh_permission_denied">权限不足</string>
+    <string name="refresh_failed">失败</string>
 </resources>

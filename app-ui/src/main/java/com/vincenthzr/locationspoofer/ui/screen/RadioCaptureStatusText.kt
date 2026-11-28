@@ -4,22 +4,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
+import com.vincenthzr.locationspoofer.data.model.RadioCaptureReport
 import com.vincenthzr.locationspoofer.ui.R
-import com.vincenthzr.locationspoofer.utils.CaptureStatus
 
 @Composable
-internal fun RadioCaptureStatusText(wifi: CaptureStatus?, cell: CaptureStatus?) {
-    Text(stringResource(R.string.obs_wifi_result, captureStatusText(wifi)), style = MaterialTheme.typography.bodySmall)
-    Text(stringResource(R.string.obs_cell_result, captureStatusText(cell)), style = MaterialTheme.typography.bodySmall)
+internal fun RadioCaptureStatusText(wifi: RadioCaptureReport?, cell: RadioCaptureReport?) {
+    Text(stringResource(R.string.obs_wifi_result, reportText(wifi)), style = MaterialTheme.typography.bodySmall)
+    Text(stringResource(R.string.obs_cell_result, reportText(cell)), style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
-private fun captureStatusText(status: CaptureStatus?): String = stringResource(when (status) {
-    null -> R.string.obs_waiting
-    CaptureStatus.OBSERVED -> R.string.obs_received
-    CaptureStatus.EMPTY -> R.string.obs_empty
-    CaptureStatus.CACHED -> R.string.obs_cached
-    CaptureStatus.NOT_UPDATED -> R.string.obs_not_updated
-    CaptureStatus.PERMISSION_DENIED -> R.string.obs_denied
-    CaptureStatus.FAILED -> R.string.obs_failed
-})
+private fun reportText(report: RadioCaptureReport?): String {
+    val labels = radioCaptureLabels(report)
+    val data = stringResource(labels.data)
+    val refresh = labels.refresh ?: return data
+    return stringResource(R.string.refresh_and_data, stringResource(refresh), data)
+}

@@ -34,6 +34,7 @@ class EnvironmentScanner(private val context: Context) {
         val connectivityManager =
             context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val resultObj = JSONObject()
+        val refresh = RefreshProbe()
         var status: CaptureStatus
         var observed: Map<String, Long> = emptyMap()
         try {
@@ -62,7 +63,7 @@ class EnvironmentScanner(private val context: Context) {
 
             val connectionInfo = wifiManager.connectionInfo
             val connectedBssid = if (isWifiConnected) connectionInfo?.bssid else null
-            val read = RecentWifiCapture.read(context, wifiManager)
+            val read = RecentWifiCapture.read(context, wifiManager, refresh)
             val results = read.rows
 
             // 1. 优先提取当前正在连接的 Wi-Fi 信息
@@ -147,7 +148,7 @@ class EnvironmentScanner(private val context: Context) {
             resultObj.put("connectedWifi", JSONObject.NULL)
             resultObj.put("nearbyWifi", JSONArray())
         }
-        RadioCapture(resultObj.toString(), status, observed)
+        RadioCapture(resultObj.toString(), status, observed, refreshOutcome = refresh.outcome)
     }
 
     @SuppressLint("MissingPermission")
@@ -161,6 +162,7 @@ class EnvironmentScanner(private val context: Context) {
         val telephonyManager =
             context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val jsonArray = JSONArray()
+        val refresh = RefreshProbe()
         var read = ScanRead.SNAPSHOT
         val observed = mutableMapOf<Int, Long>()
         val operators = mutableMapOf<Int, CellOperatorEvidence>()
@@ -168,17 +170,21 @@ class EnvironmentScanner(private val context: Context) {
         try {
             val allCellInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 val updated = try {
-                    kotlinx.coroutines.withTimeoutOrNull(3000L) {
-                        suspendCancellableCoroutine<List<CellInfo>?> { continuation ->
-                            telephonyManager.requestCellInfoUpdate(context.mainExecutor,
-                                object : TelephonyManager.CellInfoCallback() {
-                                    override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
-                                        if (continuation.isActive) continuation.resume(cellInfo)
-                                    }
-                                    override fun onError(errorCode: Int, detail: Throwable?) {
-                                        if (continuation.isActive) continuation.resume(null)
-                                    }
-                                })
+                    refresh.track<List<CellInfo>> {
+                        kotlinx.coroutines.withTimeoutOrNull(3000L) {
+                            suspendCancellableCoroutine<RefreshEvent<List<CellInfo>>> { continuation ->
+                                telephonyManager.requestCellInfoUpdate(context.mainExecutor,
+                                    object : TelephonyManager.CellInfoCallback() {
+                                        override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
+                                            if (continuation.isActive)
+                                                continuation.resume(RefreshEvent(RefreshOutcome.COMPLETED, cellInfo))
+                                        }
+                                        override fun onError(errorCode: Int, detail: Throwable?) {
+                                            if (continuation.isActive) continuation.resume(RefreshEvent(
+                                                cellRefreshError(errorCode == ERROR_TIMEOUT, detail), null))
+                                        }
+                                    })
+                            }
                         }
                     }
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -318,7 +324,7 @@ class EnvironmentScanner(private val context: Context) {
             operators.clear()
             e.printStackTrace()
         }
-        RadioCapture(jsonArray.toString(), captureStatus(read, jsonArray.length(), observed.size), observed, operators)
+        RadioCapture(jsonArray.toString(), captureStatus(read, jsonArray.length(), observed.size), observed, operators, refresh.outcome)
     }
 
     /** Kept for callers that consume records only; the first-party collection UI uses the richer outcome. */

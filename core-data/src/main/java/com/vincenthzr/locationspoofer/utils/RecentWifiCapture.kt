@@ -21,7 +21,7 @@ internal object RecentWifiCapture {
     data class Reading(val rows: List<ScanResult>, val status: CaptureStatus, val observedAtMs: Map<String, Long>)
 
     @SuppressLint("MissingPermission")
-    suspend fun read(context: Context, manager: WifiManager): Reading {
+    suspend fun read(context: Context, manager: WifiManager, refresh: RefreshProbe): Reading {
         fun snapshot(): List<ScanResult>? = try { manager.scanResults.orEmpty() } catch (_: SecurityException) { null }
         fun recent(rows: List<ScanResult>, nowUs: Long) = rows.filter { WifiObservationAge.isRecent(it.timestamp, nowUs) }
         fun nowUs() = SystemClock.elapsedRealtimeNanos() / 1_000L
@@ -30,8 +30,10 @@ internal object RecentWifiCapture {
         if (cached.isNotEmpty()) return Reading(cached, CaptureStatus.CACHED, emptyMap())
         val now = SystemClock.elapsedRealtime()
         val prev = lastRequestMs.get()
-        if ((prev >= 0 && now - prev in 0 until MIN_REQUEST_INTERVAL_MS) || !lastRequestMs.compareAndSet(prev, now))
+        if ((prev >= 0 && now - prev in 0 until MIN_REQUEST_INTERVAL_MS) || !lastRequestMs.compareAndSet(prev, now)) {
+            refresh.localCooldown()
             return Reading(emptyList(), if (first == null) CaptureStatus.PERMISSION_DENIED else CaptureStatus.NOT_UPDATED, emptyMap())
+        }
 
         val done = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
@@ -44,12 +46,14 @@ internal object RecentWifiCapture {
         var registered = false
         val startUs = nowUs()
         val read = try {
-            ContextCompat.registerReceiver(app, receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION),
-                ContextCompat.RECEIVER_NOT_EXPORTED)
-            registered = true
-            @Suppress("DEPRECATION")
-            if (manager.startScan() && withTimeoutOrNull(3_500L) { done.await() } == true) ScanRead.UPDATED
-            else ScanRead.NOT_UPDATED
+            refresh.track {
+                ContextCompat.registerReceiver(app, receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION),
+                    ContextCompat.RECEIVER_NOT_EXPORTED)
+                registered = true
+                @Suppress("DEPRECATION")
+                if (!manager.startScan()) wifiRefreshEvent(false)
+                else withTimeoutOrNull(3_500L) { wifiRefreshEvent(done.await()) }
+            } ?: ScanRead.NOT_UPDATED
         } catch (_: SecurityException) {
             ScanRead.DENIED
         } finally {

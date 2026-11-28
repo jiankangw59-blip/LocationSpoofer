@@ -2,15 +2,15 @@
 <resources>
     <string name="obs_total_wifi">Wi-Fi entries: %1$d total</string>
     <string name="obs_total_cell">Cell entries: %1$d total</string>
-    <string name="obs_wifi_result">Wi-Fi scan: %1$s</string>
-    <string name="obs_cell_result">Cell scan: %1$s</string>
+    <string name="obs_wifi_result">Wi-Fi: %1$s</string>
+    <string name="obs_cell_result">Cell: %1$s</string>
     <string name="obs_waiting">no round recorded yet</string>
     <string name="obs_received">new observations in this round</string>
-    <string name="obs_empty">completed without observations</string>
+    <string name="obs_empty">no records returned</string>
     <string name="obs_cached">cached data, not a new observation</string>
-    <string name="obs_not_updated">no confirmed update</string>
-    <string name="obs_denied">permission unavailable</string>
-    <string name="obs_failed">could not complete</string>
+    <string name="obs_not_updated">no confirmed fresh observations</string>
+    <string name="obs_denied">could not read due to permissions</string>
+    <string name="obs_failed">could not read results</string>
     <string name="obs_unknown_time">Saved entry · no local observation time on record</string>
     <string name="obs_latest_time">ID in latest saved round · observed %1$s</string>
     <string name="obs_prior_time">ID in earlier round · last observed %1$s</string>
@@ -23,4 +23,12 @@
     <string name="obs_time_legend">Observation times are derived from device timestamps at this point. They do not verify saved field values.</string>
     <string name="obs_no_round">No matching local round is on record for this point. Saved or imported entries are not proof of observation.</string>
     <string name="obs_filter">Show only IDs in latest saved round</string>
+    <string name="refresh_and_data">Refresh: %1$s; data: %2$s</string>
+    <string name="refresh_not_requested">not requested</string>
+    <string name="refresh_completed">update notification received</string>
+    <string name="refresh_not_confirmed">update not confirmed</string>
+    <string name="refresh_local_cooldown">skipped during local cooldown</string>
+    <string name="refresh_timed_out">timed out</string>
+    <string name="refresh_permission_denied">permission denied</string>
+    <string name="refresh_failed">failed</string>
 </resources>

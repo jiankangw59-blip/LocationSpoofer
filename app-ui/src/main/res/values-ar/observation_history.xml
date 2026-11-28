@@ -2,15 +2,15 @@
 <resources>
     <string name="obs_total_wifi">إجمالي سجلات Wi-Fi: %1$d</string>
     <string name="obs_total_cell">إجمالي السجلات الخلوية: %1$d</string>
-    <string name="obs_wifi_result">فحص Wi-Fi: %1$s</string>
-    <string name="obs_cell_result">فحص الخلايا: %1$s</string>
+    <string name="obs_wifi_result">Wi-Fi: %1$s</string>
+    <string name="obs_cell_result">الشبكة الخلوية: %1$s</string>
     <string name="obs_waiting">لا توجد نتيجة مسجلة بعد</string>
     <string name="obs_received">رُصدت إشارات جديدة في هذه الجولة</string>
-    <string name="obs_empty">اكتمل دون رصد</string>
+    <string name="obs_empty">لم ترد أي سجلات</string>
     <string name="obs_cached">بيانات مخزنة، وليست رصداً جديداً</string>
-    <string name="obs_not_updated">لم يتأكد وجود تحديث</string>
-    <string name="obs_denied">الإذن غير متاح</string>
-    <string name="obs_failed">تعذّر الإكمال</string>
+    <string name="obs_not_updated">لا تأكيد على وجود رصد جديد</string>
+    <string name="obs_denied">تعذرت القراءة بسبب الأذونات</string>
+    <string name="obs_failed">تعذرت قراءة النتائج</string>
     <string name="obs_unknown_time">سجل محفوظ · لا يوجد وقت رصد محلي مسجّل</string>
     <string name="obs_latest_time">المعرّف في أحدث جولة محفوظة · وقت الرصد %1$s</string>
     <string name="obs_prior_time">المعرّف في جولة سابقة · آخر رصد %1$s</string>
@@ -23,4 +23,12 @@
     <string name="obs_time_legend">أوقات الرصد مستمدة من أختام الوقت لدى الجهاز، ولا تؤكد قيم كل حقل محفوظ.</string>
     <string name="obs_no_round">لا توجد جولة محلية مطابقة لهذه النقطة. وجود سجل محفوظ أو مستورد لا يثبت رصده.</string>
     <string name="obs_filter">عرض معرّفات أحدث جولة محفوظة فقط</string>
+    <string name="refresh_and_data">التحديث: %1$s؛ البيانات: %2$s</string>
+    <string name="refresh_not_requested">لم يُطلب</string>
+    <string name="refresh_completed">ورد إشعار بالتحديث</string>
+    <string name="refresh_not_confirmed">لم يتأكد التحديث</string>
+    <string name="refresh_local_cooldown">لم يُطلب مجددًا بسبب مهلة التطبيق</string>
+    <string name="refresh_timed_out">انتهت مهلة الانتظار</string>
+    <string name="refresh_permission_denied">الإذن مرفوض</string>
+    <string name="refresh_failed">تعذّر التحديث</string>
 </resources>
