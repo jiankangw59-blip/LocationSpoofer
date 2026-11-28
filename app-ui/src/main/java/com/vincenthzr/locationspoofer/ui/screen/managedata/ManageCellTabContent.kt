@@ -17,13 +17,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vincenthzr.locationspoofer.utils.LocalObservationMark
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentOrange
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
 
 @Composable
-fun ManageCellTabContent(
+internal fun ManageCellTabContent(
+    marks: Map<String, LocalObservationMark>,
+    latestOnly: Boolean,
     cellList: List<EditableCellItem>,
     selectedCellKey: String?,
     isDark: Boolean,
@@ -147,7 +150,7 @@ fun ManageCellTabContent(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = stringResource(R.string.no_cell_data_in_record),
+                    text = stringResource(if (latestOnly) R.string.obs_no_latest_matches else R.string.no_cell_data_in_record),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
@@ -227,7 +230,7 @@ fun ManageCellTabContent(
                                                 .padding(horizontal = 5.dp, vertical = 1.dp)
                                         ) {
                                             Text(
-                                                text = stringResource(R.string.registered_cell_badge),
+                                                text = stringResource(R.string.obs_saved_serving),
                                                 fontSize = 9.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = AccentOrange
@@ -237,6 +240,8 @@ fun ManageCellTabContent(
                                 }
 
                                 Spacer(Modifier.height(3.dp))
+
+                                ObservationTimeText(marks[cell.cellKey])
 
                                 val details = CellEvidenceDisplay.details(cell, unknown)
 

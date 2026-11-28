@@ -91,7 +91,7 @@ interface EnvironmentDao {
 
     /** 复用最近的 20 米内点位；保持锚点坐标不变，避免移动采集串联成一个大点位。 */
     @Transaction
-    suspend fun findOrCreateCollectionLocation(lat: Double, lng: Double, collectionRouteId: Long? = null): Long {
+    suspend fun findOrCreateCollectionLocation(lat: Double, lng: Double, collectionRouteId: Long? = null, timestampMs: Long = System.currentTimeMillis()): Long {
         val radiusM = 20.0
         val latDelta = radiusM / 110_000.0
         val lngDelta = latDelta / maxOf(0.000001, abs(cos(Math.toRadians(lat))))
@@ -105,10 +105,10 @@ interface EnvironmentDao {
         val nearest = candidates.filter { it.collectionRouteId == collectionRouteId }
             .minByOrNull { GeoMath.distance(position, LatLng(it.lat, it.lng)) }
         if (nearest != null && GeoMath.distance(position, LatLng(nearest.lat, nearest.lng)) <= radiusM + 0.000001) {
-            updateCollectionTimestamp(nearest.id, System.currentTimeMillis())
+            updateCollectionTimestamp(nearest.id, timestampMs)
             return nearest.id
         }
-        return insertLocation(LocationRecord(lat = lat, lng = lng, collectionRouteId = collectionRouteId))
+        return insertLocation(LocationRecord(lat = lat, lng = lng, collectionRouteId = collectionRouteId, timestamp = timestampMs))
     }
 
     @Insert

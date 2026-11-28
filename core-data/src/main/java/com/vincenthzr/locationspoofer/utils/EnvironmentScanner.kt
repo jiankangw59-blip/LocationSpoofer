@@ -1,6 +1,7 @@
 package com.vincenthzr.locationspoofer.utils
 
 import android.annotation.SuppressLint
+import android.os.SystemClock
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.telephony.CellInfo
@@ -24,12 +25,17 @@ import kotlin.coroutines.resume
 class EnvironmentScanner(private val context: Context) {
 
     @SuppressLint("MissingPermission")
-    suspend fun scanWifi(): String = withContext(Dispatchers.IO) {
+    suspend fun scanWifi(): String = scanWifiObservation().recordsJson
+
+    @SuppressLint("MissingPermission")
+    suspend fun scanWifiObservation(): RadioCapture<String> = withContext(Dispatchers.IO) {
         val wifiManager =
             context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val connectivityManager =
             context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val resultObj = JSONObject()
+        var status: CaptureStatus
+        var observed: Map<String, Long> = emptyMap()
         try {
             var isWifiConnected = false
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
@@ -56,7 +62,8 @@ class EnvironmentScanner(private val context: Context) {
 
             val connectionInfo = wifiManager.connectionInfo
             val connectedBssid = if (isWifiConnected) connectionInfo?.bssid else null
-            val results = RecentWifiCapture.read(context, wifiManager)
+            val read = RecentWifiCapture.read(context, wifiManager)
+            val results = read.rows
 
             // 1. 优先提取当前正在连接的 Wi-Fi 信息
             if (isWifiConnected && connectedBssid != null && connectedBssid != "02:00:00:00:00:00") {
@@ -129,53 +136,68 @@ class EnvironmentScanner(private val context: Context) {
                 }
             }
             resultObj.put("nearbyWifi", nearbyArray)
+            status = read.status
+            observed = read.observedAtMs
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {
             e.printStackTrace()
+            status = if (e is SecurityException) CaptureStatus.PERMISSION_DENIED else CaptureStatus.FAILED
             resultObj.put("isConnected", false)
             resultObj.put("connectedWifi", JSONObject.NULL)
             resultObj.put("nearbyWifi", JSONArray())
         }
-        resultObj.toString()
+        RadioCapture(resultObj.toString(), status, observed)
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun scanCell(): String = withContext(Dispatchers.IO) {
+    suspend fun scanCell(): String = scanCellObservation().recordsJson
+
+    @SuppressLint("MissingPermission")
+    suspend fun scanCellObservation(): RadioCapture<Int> = withContext(Dispatchers.IO) {
         // 之前这里连了 Wi-Fi 就直接跳过基站扫描，但 Wi-Fi 和基站是同一个物理位置的两个
         // 独立维度，并不互斥，跳过只会导致最常见的采集场景（家里/公司都连着 Wi-Fi）
         // 永远采不到基站数据，纯属早期写错，去掉这个限制。
         val telephonyManager =
             context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val jsonArray = JSONArray()
+        var read = ScanRead.SNAPSHOT
+        val observed = mutableMapOf<Int, Long>()
+        val startUs = SystemClock.elapsedRealtimeNanos() / 1_000L
         try {
-            val allCellInfo =
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                    try {
-                        kotlinx.coroutines.withTimeoutOrNull(3000L) {
-                            suspendCancellableCoroutine { continuation ->
-                                telephonyManager.requestCellInfoUpdate(
-                                    context.mainExecutor,
-                                    object : android.telephony.TelephonyManager.CellInfoCallback() {
-                                        override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
-                                            if (continuation.isActive) continuation.resume(cellInfo)
-                                        }
-
-                                        override fun onError(errorCode: Int, detail: Throwable?) {
-                                            if (continuation.isActive) continuation.resume(
-                                                telephonyManager.allCellInfo ?: emptyList()
-                                            )
-                                        }
+            val allCellInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val updated = try {
+                    kotlinx.coroutines.withTimeoutOrNull(3000L) {
+                        suspendCancellableCoroutine<List<CellInfo>?> { continuation ->
+                            telephonyManager.requestCellInfoUpdate(context.mainExecutor,
+                                object : TelephonyManager.CellInfoCallback() {
+                                    override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
+                                        if (continuation.isActive) continuation.resume(cellInfo)
                                     }
-                                )
-                            }
-                        } ?: (telephonyManager.allCellInfo ?: emptyList())
-                    } catch (e: Exception) {
-                        telephonyManager.allCellInfo ?: emptyList()
+                                    override fun onError(errorCode: Int, detail: Throwable?) {
+                                        if (continuation.isActive) continuation.resume(null)
+                                    }
+                                })
+                        }
                     }
-                } else {
-                    telephonyManager.allCellInfo ?: emptyList()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: SecurityException) {
+                    read = ScanRead.DENIED
+                    null
+                } catch (_: Exception) {
+                    read = ScanRead.FAILED
+                    null
                 }
+                if (updated != null) {
+                    read = ScanRead.UPDATED
+                    updated
+                } else {
+                    if (read == ScanRead.SNAPSHOT) read = ScanRead.NOT_UPDATED
+                    telephonyManager.allCellInfo.orEmpty()
+                }
+            } else telephonyManager.allCellInfo.orEmpty()
+            val window = CaptureWindow(startUs, SystemClock.elapsedRealtimeNanos() / 1_000L, System.currentTimeMillis())
 
             if (allCellInfo.isEmpty()) {
                 val cellLoc = try {
@@ -269,19 +291,29 @@ class EnvironmentScanner(private val context: Context) {
                         putCapturedCellStrength(obj, signal.dbm)
                     }
                 }
+                // Keep DB JSON identical; timestamp evidence is sidecar-only and uses the array index until the row is saved.
+                if (read == ScanRead.UPDATED && obj.has("type")) {
+                    @Suppress("DEPRECATION")
+                    val sampled = window.sampleEpochMs(cellInfo.timeStamp / 1_000L)
+                    if (sampled != null) observed[jsonArray.length()] = sampled
+                }
                 jsonArray.put(obj)
             }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
+            read = if (e is SecurityException) ScanRead.DENIED else ScanRead.FAILED
+            observed.clear()
             e.printStackTrace()
         }
-        jsonArray.toString()
+        RadioCapture(jsonArray.toString(), captureStatus(read, jsonArray.length(), observed.size), observed)
     }
 
     /** Kept for callers that consume records only; the first-party collection UI uses the richer outcome. */
     suspend fun scanBluetooth(): String = scanBluetoothObservation().recordsJson
 
     @SuppressLint("MissingPermission")
-    suspend fun scanBluetoothObservation(): BleObservation = withContext(Dispatchers.IO) {
+    suspend fun scanBluetoothObservation(onWindowSamples: ((Map<String, Long>) -> Unit)? = null): BleObservation = withContext(Dispatchers.IO) {
         try {
             val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
                 ?: return@withContext BleObservation(BleScanStatus.UNAVAILABLE)
@@ -300,6 +332,7 @@ class EnvironmentScanner(private val context: Context) {
             val scanner = adapter.bluetoothLeScanner ?: return@withContext BleObservation(BleScanStatus.UNAVAILABLE)
 
             lateinit var callback: ScanCallback
+            val startUs = SystemClock.elapsedRealtimeNanos() / 1_000L
             val window = collectBleWindow<ScanResult>(2000L, start = { offer, fail ->
                 callback = object : ScanCallback() {
                     override fun onScanResult(callbackType: Int, result: ScanResult?) { result?.let(offer) }
@@ -320,6 +353,16 @@ class EnvironmentScanner(private val context: Context) {
                     obj.put("scanRecordHex", bytes.joinToString("") { "%02X".format(it) })
                 }
                 records.put(obj)
+            }
+            if (onWindowSamples != null) {
+                val clock = CaptureWindow(startUs, SystemClock.elapsedRealtimeNanos() / 1_000L, System.currentTimeMillis())
+                val samples = mutableMapOf<String, Long>()
+                for (item in window) {
+                    val t = clock.sampleEpochMs(item.timestampNanos / 1_000L) ?: continue
+                    val address = item.device.address ?: continue
+                    samples[address] = maxOf(samples[address] ?: t, t)
+                }
+                onWindowSamples(samples)
             }
             BleObservation.completed(records.toString(), records.length())
         } catch (e: kotlinx.coroutines.CancellationException) {

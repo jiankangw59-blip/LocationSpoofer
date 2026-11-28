@@ -245,13 +245,13 @@ fun DataCollectionAssistScreen(
                     ScanCountBadge(
                         icon = Icons.Rounded.Wifi,
                         tint = AccentBlue,
-                        text = stringResource(R.string.scanned_wifi_count, uiState.scannedWifiCount),
+                        text = stringResource(R.string.obs_total_wifi, uiState.scannedWifiCount),
                         modifier = Modifier.weight(1f)
                     )
                     ScanCountBadge(
                         icon = Icons.Rounded.CellTower,
                         tint = AccentGreen,
-                        text = stringResource(R.string.scanned_cell_count, uiState.scannedCellCount),
+                        text = stringResource(R.string.obs_total_cell, uiState.scannedCellCount),
                         modifier = Modifier.weight(1f)
                     )
                     ScanCountBadge(
@@ -264,6 +264,7 @@ fun DataCollectionAssistScreen(
 
                 Spacer(Modifier.height(14.dp))
 
+                RadioCaptureStatusText(uiState.lastWifiCaptureStatus, uiState.lastCellCaptureStatus)
                 BleObservationStatusText(uiState.lastBleScanStatus)
                 Text(
                     text = stringResource(R.string.data_collection_assist_hint),

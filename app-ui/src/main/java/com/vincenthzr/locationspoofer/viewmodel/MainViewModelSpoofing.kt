@@ -1,5 +1,7 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
+import com.vincenthzr.locationspoofer.utils.LocalObservationJournal
+import com.vincenthzr.locationspoofer.utils.ObservationKind
 import com.vincenthzr.locationspoofer.ui.BuildConfig
 import androidx.lifecycle.viewModelScope
 import com.vincenthzr.locationspoofer.ui.R
@@ -258,6 +260,8 @@ internal fun MainViewModel.toggleContinuousScanning() {
             scannedWifiCount = 0,
             scannedCellCount = 0,
             scannedBluetoothCount = 0,
+            lastWifiCaptureStatus = null,
+            lastCellCaptureStatus = null,
             lastBleScanStatus = null
         )
     }
@@ -287,18 +291,30 @@ internal fun MainViewModel.toggleContinuousScanning() {
                     val lat = realLoc.first
                     val lng = realLoc.second
                     withContext(NonCancellable) {
-                        val wifiJson = environmentScanner.scanWifi()
-                        val cellJson = environmentScanner.scanCell()
-                        val ble = environmentScanner.scanBluetoothObservation()
-                        val id = saveEnvironmentData(lat, lng, wifiJson, cellJson, ble.recordsJson, mergeNearby = true, collectionRouteId = routeId)
+                        val journal = LocalObservationJournal.get(context)
+                        val round = journal.beginRound()
+                        val wifi = environmentScanner.scanWifiObservation()
+                        val cell = environmentScanner.scanCellObservation()
+                        var bleSamples: Map<String, Long> = emptyMap()
+                        val ble = environmentScanner.scanBluetoothObservation { bleSamples = it }
+                        val savedCellSamples = mutableMapOf<String, Long>()
+                        val pointStamp = System.currentTimeMillis()
+                        val id = saveEnvironmentData(lat, lng, wifi.recordsJson, cell.recordsJson, ble.recordsJson,
+                            mergeNearby = true, collectionRouteId = routeId, collectionTimestampMs = pointStamp) { row, key ->
+                            cell.observedAtMs[row]?.let { t -> savedCellSamples[key] = maxOf(savedCellSamples[key] ?: t, t) }
+                        }
+                        journal.record(id, round, mapOf(ObservationKind.WIFI to wifi.observedAtMs,
+                            ObservationKind.CELL to savedCellSamples, ObservationKind.BLE to bleSamples), pointStamp)
                         savedIds += id
-                        val wCount = parseWifiCount(wifiJson)
-                        val cCount = org.json.JSONArray(cellJson).length()
+                        val wCount = parseWifiCount(wifi.recordsJson)
+                        val cCount = org.json.JSONArray(cell.recordsJson).length()
                         _uiState.update {
                             it.copy(
                                 scannedWifiCount = it.scannedWifiCount + wCount,
                                 scannedCellCount = it.scannedCellCount + cCount,
                                 scannedBluetoothCount = it.scannedBluetoothCount + ble.count,
+                                lastWifiCaptureStatus = wifi.status,
+                                lastCellCaptureStatus = cell.status,
                                 lastBleScanStatus = ble.status
                             )
                         }

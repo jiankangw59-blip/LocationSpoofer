@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="cell_evidence_unknown">Unknown</string>
-    <string name="cell_evidence_source_note">Saved cell values may come from a capture, a manual entry, or a directory estimate. They do not confirm what the target receives now.</string>
+    <string name="cell_evidence_source_note">Saved cell values may come from a capture, manual entry, or a directory. Older records could store 460/0 when operator details were missing. These values alone do not confirm the operator at the time.</string>
     <string name="cell_evidence_edit_signal_unknown">Signal strength: unknown (no replacement selected)</string>
 </resources>

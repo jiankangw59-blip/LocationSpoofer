@@ -11,6 +11,6 @@ import org.koin.dsl.module
 val viewModelModule = module {
     viewModel { MainViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { UpdateViewModel(androidContext()) }
-    viewModel { ManageDataViewModel(get()) }
+    viewModel { ManageDataViewModel(get()) { com.vincenthzr.locationspoofer.utils.LocalObservationJournal.get(androidContext()) } }
     viewModel { RemoteWifiViewModel(get(), get(), get(), get()) }
 }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="cell_evidence_unknown">غير معروف</string>
-    <string name="cell_evidence_source_note">قد تأتي القيم المحفوظة من رصد أو إدخال يدوي أو تقدير من دليل، ولا تثبت الاستقبال الحالي في الموقع المطلوب.</string>
+    <string name="cell_evidence_source_note">قد تأتي قيم المحطة من رصد أو إدخال يدوي أو دليل. وقد تحتوي السجلات القديمة على 460/0 عند غياب بيانات المشغّل؛ فلا تكفي هاتان القيمتان لتأكيد هوية المشغّل وقت الرصد.</string>
     <string name="cell_evidence_edit_signal_unknown">شدة الإشارة: غير معروفة (لم تُختر قيمة بديلة)</string>
 </resources>

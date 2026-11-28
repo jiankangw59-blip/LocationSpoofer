@@ -17,12 +17,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vincenthzr.locationspoofer.utils.LocalObservationMark
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
 
 @Composable
-fun ManageBluetoothTabContent(
+internal fun ManageBluetoothTabContent(
+    marks: Map<String, LocalObservationMark>,
+    latestOnly: Boolean,
     btList: List<EditableBluetoothItem>,
     selectedBluetoothAddress: String?,
     isDark: Boolean,
@@ -141,7 +144,7 @@ fun ManageBluetoothTabContent(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = stringResource(R.string.no_bt_data_in_record),
+                    text = stringResource(if (latestOnly) R.string.obs_no_latest_matches else R.string.no_bt_data_in_record),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
@@ -221,6 +224,8 @@ fun ManageBluetoothTabContent(
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                 )
+
+                                ObservationTimeText(marks[bt.address])
 
                                 if (bt.scanRecordHex.isNotBlank()) {
                                     Text(

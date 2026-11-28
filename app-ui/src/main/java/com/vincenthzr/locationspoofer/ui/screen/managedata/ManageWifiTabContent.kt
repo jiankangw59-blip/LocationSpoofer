@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.utils.WifiRecordEvidence
+import com.vincenthzr.locationspoofer.utils.LocalObservationMark
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
@@ -31,7 +32,9 @@ internal fun wifiSignalLabel(level: Int, source: String?): String = when (WifiRe
 }
 
 @Composable
-fun ManageWifiTabContent(
+internal fun ManageWifiTabContent(
+    marks: Map<String, LocalObservationMark>,
+    latestOnly: Boolean,
     wifiList: List<EditableWifiItem>,
     selectedWifiBssid: String?,
     isDark: Boolean,
@@ -148,7 +151,7 @@ fun ManageWifiTabContent(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = stringResource(R.string.no_wifi_data_in_record),
+                    text = stringResource(if (latestOnly) R.string.obs_no_latest_matches else R.string.no_wifi_data_in_record),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                 )
@@ -228,7 +231,7 @@ fun ManageWifiTabContent(
                                                 .padding(horizontal = 5.dp, vertical = 1.dp)
                                         ) {
                                             Text(
-                                                text = stringResource(R.string.connected_wifi_badge),
+                                                text = stringResource(R.string.obs_saved_connected),
                                                 fontSize = 9.5.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = AccentGreen
@@ -245,6 +248,8 @@ fun ManageWifiTabContent(
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                 )
+
+                                ObservationTimeText(marks[wifi.bssid])
 
                                 Text(
                                     text = wifi.capabilities.ifBlank { stringResource(R.string.wifi_evidence_unknown_security) },

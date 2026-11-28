@@ -32,6 +32,7 @@ import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
 import com.vincenthzr.locationspoofer.ui.components.recordTimeText
 import java.text.SimpleDateFormat
 import java.util.Locale
+import com.vincenthzr.locationspoofer.utils.ObservationKind
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.text.KeyboardOptions
@@ -183,6 +184,13 @@ fun ModernEditDataDialog(
         list
     }
 
+    val read = rememberLocalHistory(item.location.id, item.location.timestamp)
+    val snapshot = (read as? HistoryRead.Ready)?.snapshot
+    var latestOnly by remember(item.location.id) { mutableStateOf(false) }
+    val wifiRows = remember(wifiList, snapshot, latestOnly) { observationRows(wifiList, snapshot, ObservationKind.WIFI, latestOnly) { it.bssid } }
+    val cellRows = remember(cellList, snapshot, latestOnly) { observationRows(cellList, snapshot, ObservationKind.CELL, latestOnly) { it.cellKey } }
+    val btRows = remember(btList, snapshot, latestOnly) { observationRows(btList, snapshot, ObservationKind.BLE, latestOnly) { it.address } }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -232,7 +240,7 @@ fun ModernEditDataDialog(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = timeStr,
+                                text = stringResource(R.string.obs_point_updated, timeStr),
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )
@@ -525,6 +533,21 @@ fun ModernEditDataDialog(
                         }
                     }
 
+                    Text(
+                        text = stringResource(when (read) {
+                            HistoryRead.Loading -> R.string.obs_loading
+                            HistoryRead.Unavailable -> R.string.obs_unavailable
+                            is HistoryRead.Ready -> if (read.snapshot.hasRound) R.string.obs_time_legend else R.string.obs_no_round
+                        }),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FilterChip(
+                        selected = latestOnly,
+                        onClick = { latestOnly = !latestOnly },
+                        enabled = latestOnly || snapshot?.hasRound == true,
+                        label = { Text(stringResource(R.string.obs_filter)) }
+                    )
                     // 选项卡切换器：[Wi-Fi] [基站] [蓝牙]
                     Row(
                         modifier = Modifier
@@ -537,9 +560,9 @@ fun ModernEditDataDialog(
                         EditDataTab.values().forEach { tab ->
                             val isCurrent = selectedTab == tab
                             val tabTitle = when (tab) {
-                                EditDataTab.WIFI -> stringResource(R.string.manage_tab_wifi, wifiList.size)
-                                EditDataTab.CELL -> stringResource(R.string.manage_tab_cell, cellList.size)
-                                EditDataTab.BLUETOOTH -> stringResource(R.string.manage_tab_bluetooth, btList.size)
+                                EditDataTab.WIFI -> stringResource(R.string.manage_tab_wifi, wifiRows.shown.size)
+                                EditDataTab.CELL -> stringResource(R.string.manage_tab_cell, cellRows.shown.size)
+                                EditDataTab.BLUETOOTH -> stringResource(R.string.manage_tab_bluetooth, btRows.shown.size)
                             }
                             val tabColor = when (tab) {
                                 EditDataTab.WIFI -> AccentBlue
@@ -582,7 +605,9 @@ fun ModernEditDataDialog(
                     when (selectedTab) {
                         EditDataTab.WIFI -> {
                             ManageWifiTabContent(
-                                wifiList = wifiList,
+                                wifiList = wifiRows.shown,
+                                marks = wifiRows.marks,
+                                latestOnly = latestOnly,
                                 selectedWifiBssid = selectedWifiBssid,
                                 isDark = isDark,
                                 onSelectBssid = { selectedWifiBssid = it },
@@ -600,7 +625,9 @@ fun ModernEditDataDialog(
 
                         EditDataTab.CELL -> {
                             ManageCellTabContent(
-                                cellList = cellList,
+                                cellList = cellRows.shown,
+                                marks = cellRows.marks,
+                                latestOnly = latestOnly,
                                 selectedCellKey = selectedCellKey,
                                 isDark = isDark,
                                 onSelectCellKey = { selectedCellKey = it },
@@ -618,7 +645,9 @@ fun ModernEditDataDialog(
 
                         EditDataTab.BLUETOOTH -> {
                             ManageBluetoothTabContent(
-                                btList = btList,
+                                btList = btRows.shown,
+                                marks = btRows.marks,
+                                latestOnly = latestOnly,
                                 selectedBluetoothAddress = selectedBluetoothAddress,
                                 isDark = isDark,
                                 onSelectAddress = { selectedBluetoothAddress = it },
@@ -667,8 +696,8 @@ fun ModernEditDataDialog(
 
                     Button(
                         onClick = {
-                            val parsedLat = latText.toDoubleOrNull() ?: item.location.lat
-                            val parsedLng = lngText.toDoubleOrNull() ?: item.location.lng
+                            val parsedLat = storedOrEditedCoordinate(latText, item.location.lat)
+                            val parsedLng = storedOrEditedCoordinate(lngText, item.location.lng)
                             onSave(parsedLat, parsedLng, placeName, remark, selectedWifiBssid, selectedBluetoothAddress, selectedCellKey)
                         },
                         shape = RoundedCornerShape(14.dp),

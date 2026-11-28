@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="obs_total_wifi">إجمالي سجلات Wi-Fi: %1$d</string>
+    <string name="obs_total_cell">إجمالي السجلات الخلوية: %1$d</string>
+    <string name="obs_wifi_result">فحص Wi-Fi: %1$s</string>
+    <string name="obs_cell_result">فحص الخلايا: %1$s</string>
+    <string name="obs_waiting">لا توجد نتيجة مسجلة بعد</string>
+    <string name="obs_received">رُصدت إشارات جديدة في هذه الجولة</string>
+    <string name="obs_empty">اكتمل دون رصد</string>
+    <string name="obs_cached">بيانات مخزنة، وليست رصداً جديداً</string>
+    <string name="obs_not_updated">لم يتأكد وجود تحديث</string>
+    <string name="obs_denied">الإذن غير متاح</string>
+    <string name="obs_failed">تعذّر الإكمال</string>
+    <string name="obs_unknown_time">سجل محفوظ · لا يوجد وقت رصد محلي مسجّل</string>
+    <string name="obs_latest_time">المعرّف في أحدث جولة محفوظة · وقت الرصد %1$s</string>
+    <string name="obs_prior_time">المعرّف في جولة سابقة · آخر رصد %1$s</string>
+    <string name="obs_point_updated">وقت سجل النقطة: %1$s</string>
+    <string name="obs_no_latest_matches">لا يوجد هنا سجل محفوظ يطابق رصداً محلياً في أحدث جولة.</string>
+    <string name="obs_saved_connected">محفوظ كمتصل</string>
+    <string name="obs_saved_serving">محفوظ كخلية خادمة</string>
+    <string name="obs_loading">جارٍ قراءة سجل الرصد المحلي…</string>
+    <string name="obs_unavailable">تعذّرت قراءة الرصد المحلي، وتبقى السجلات المحفوظة متاحة.</string>
+    <string name="obs_time_legend">أوقات الرصد مستمدة من أختام الوقت لدى الجهاز، ولا تؤكد قيم كل حقل محفوظ.</string>
+    <string name="obs_no_round">لا توجد جولة محلية مطابقة لهذه النقطة. وجود سجل محفوظ أو مستورد لا يثبت رصده.</string>
+    <string name="obs_filter">عرض معرّفات أحدث جولة محفوظة فقط</string>
+</resources>

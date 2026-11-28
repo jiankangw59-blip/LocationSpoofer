@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="obs_total_wifi">Wi-Fi 累计 %1$d 条</string>
+    <string name="obs_total_cell">基站累计 %1$d 条</string>
+    <string name="obs_wifi_result">Wi-Fi 扫描：%1$s</string>
+    <string name="obs_cell_result">基站扫描：%1$s</string>
+    <string name="obs_waiting">尚未记录本轮结果</string>
+    <string name="obs_received">本轮收到新观测</string>
+    <string name="obs_empty">已完成，未收到观测</string>
+    <string name="obs_cached">缓存记录，不算本轮新观测</string>
+    <string name="obs_not_updated">未确认有新结果</string>
+    <string name="obs_denied">缺少权限</string>
+    <string name="obs_failed">未能完成</string>
+    <string name="obs_unknown_time">已保存条目 · 本机观测时间未知</string>
+    <string name="obs_latest_time">最近一次已保存轮次的标识 · 观测于 %1$s</string>
+    <string name="obs_prior_time">较早轮次的标识 · 上次观测于 %1$s</string>
+    <string name="obs_point_updated">点位记录时间：%1$s</string>
+    <string name="obs_no_latest_matches">此分类没有能与最近一次本机采集对应的条目。</string>
+    <string name="obs_saved_connected">记录为已连接</string>
+    <string name="obs_saved_serving">记录为服务小区</string>
+    <string name="obs_loading">正在读取本机观测记录…</string>
+    <string name="obs_unavailable">本机观测记录不可读；仍可查看已保存条目。</string>
+    <string name="obs_time_legend">标识的本机观测时间按设备时间戳换算，不代表条目中每个参数都是该次实测。</string>
+    <string name="obs_no_round">该点没有可对应的本机采集轮次；已保存或导入的数据不等于本机观测。</string>
+    <string name="obs_filter">仅看最近一次已保存轮次的标识</string>
+</resources>

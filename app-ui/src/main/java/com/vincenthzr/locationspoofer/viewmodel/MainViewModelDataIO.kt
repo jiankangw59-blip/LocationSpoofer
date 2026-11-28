@@ -38,11 +38,13 @@ internal suspend fun MainViewModel.saveEnvironmentData(
     cellJson: String,
     bluetoothJson: String,
     mergeNearby: Boolean = false,
-    collectionRouteId: Long? = null
+    collectionRouteId: Long? = null,
+    collectionTimestampMs: Long = System.currentTimeMillis(),
+    onCellSaved: ((Int, String) -> Unit)? = null
 ): Long {
     val existingLocation = if (mergeNearby) null else environmentDao.findLocationByCoordinates(lat, lng)
     val locId = if (mergeNearby) {
-        environmentDao.findOrCreateCollectionLocation(lat, lng, collectionRouteId)
+        environmentDao.findOrCreateCollectionLocation(lat, lng, collectionRouteId, collectionTimestampMs)
     } else if (existingLocation != null) {
         // REPLACE 会删除父记录并级联清空已有设备关联，复用点位只更新时间。
         environmentDao.updateCollectionTimestamp(existingLocation.id, System.currentTimeMillis())
@@ -185,6 +187,7 @@ internal suspend fun MainViewModel.saveEnvironmentData(
                     obj.optBoolean("isRegistered", false)
                 )
             )
+            onCellSaved?.invoke(i, cellKey)
         }
     } catch (e: org.json.JSONException) {
     }

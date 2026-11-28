@@ -211,7 +211,7 @@ fun ScannerMapScreen(
                 ) {
                     Text(
                         text = stringResource(
-                            R.string.scanned_wifi_count,
+                            R.string.obs_total_wifi,
                             uiState.scannedWifiCount
                         ),
                         fontSize = 12.sp,
@@ -220,7 +220,7 @@ fun ScannerMapScreen(
                     )
                     Text(
                         text = stringResource(
-                            R.string.scanned_cell_count,
+                            R.string.obs_total_cell,
                             uiState.scannedCellCount
                         ),
                         fontSize = 12.sp,
@@ -236,6 +236,7 @@ fun ScannerMapScreen(
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    RadioCaptureStatusText(uiState.lastWifiCaptureStatus, uiState.lastCellCaptureStatus)
                     BleObservationStatusText(uiState.lastBleScanStatus)
                 }
             }

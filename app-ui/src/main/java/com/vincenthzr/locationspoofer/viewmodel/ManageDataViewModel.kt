@@ -15,7 +15,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewModel() {
+class ManageDataViewModel(
+    private val environmentDao: EnvironmentDao,
+    private val history: (() -> com.vincenthzr.locationspoofer.utils.LocalObservationJournal)? = null
+) : ViewModel() {
     private val _uiState = MutableStateFlow(ManageDataUiState())
     val uiState: StateFlow<ManageDataUiState> = _uiState.asStateFlow()
     private var observationJob: Job? = null
@@ -39,12 +42,14 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
     fun deleteManageData(ids: List<Long>) {
         viewModelScope.launch(Dispatchers.IO) {
             environmentDao.deleteLocations(ids)
+            history?.invoke()?.forget(ids)
         }
     }
 
     fun deleteManageDataSingle(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             environmentDao.deleteLocation(id)
+            history?.invoke()?.forget(listOf(id))
         }
     }
 
@@ -59,6 +64,7 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
         selectedCellKey: String?
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            val before = if (history != null) environmentDao.getCompleteLocationById(id)?.location else null
             environmentDao.updateMetadata(
                 id,
                 lat,
@@ -69,6 +75,7 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
                 selectedBluetoothAddress,
                 selectedCellKey
             )
+            if (before != null && (before.lat != lat || before.lng != lng)) history?.invoke()?.forget(listOf(id))
         }
     }
 
@@ -261,6 +268,7 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
         viewModelScope.launch(Dispatchers.IO) {
             environmentDao.clearCollectionRoutes()
             environmentDao.clearAll()
+            history?.invoke()?.forgetAll()
         }
     }
 }

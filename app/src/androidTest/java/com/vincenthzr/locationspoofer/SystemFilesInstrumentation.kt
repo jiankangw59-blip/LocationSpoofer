@@ -101,6 +101,11 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (lookupArguments?.getString("check") == "radio-history-fixtures") {
+            val output = checkRadioHistoryFixtures(targetContext)
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (lookupArguments?.getString("check") == "radio-evidence-fixtures") {
             val output = checkRadioEvidenceFixtures()
             finish(if (output.getString("result") == "PASS") -1 else 0, output)

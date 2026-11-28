@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="cell_evidence_unknown">未知</string>
-    <string name="cell_evidence_source_note">已存基站参数可能来自采集、手动填写或目录估算，不代表目标点当前实测。</string>
+    <string name="cell_evidence_source_note">保存的基站参数可能来自采集、手填或目录。旧记录在运营商信息缺失时也可能保存 460/0；不能仅凭这两个数确认当时的运营商。</string>
     <string name="cell_evidence_edit_signal_unknown">信号强度：未知（未选择替换值）</string>
 </resources>
