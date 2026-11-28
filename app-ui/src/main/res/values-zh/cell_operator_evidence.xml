@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cell_operator_saved_title">已保存：%1$s</string>
+    <string name="cell_operator_unverified">已保存的运营商代码没有对应的字段观测记录。</string>
+    <string name="cell_operator_from_sample">该次观测的系统报告：MCC %1$s · MNC %2$s</string>
+    <string name="cell_operator_not_reported">未提供有效值</string>
+</resources>

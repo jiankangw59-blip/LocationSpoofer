@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.ui.screen.managedata
 
+import com.vincenthzr.locationspoofer.utils.CellOperatorEvidence
 import java.util.Locale
 
 /** Display only: never repair stored identities, infer measurement provenance, or rewrite a model. */
@@ -14,6 +15,19 @@ internal object CellEvidenceDisplay {
         return if (radio == "CDMA") radio else
             "$radio • MCC:${id(c.mcc, 999, unknown, 1)} MNC:${id(c.mnc, 999, unknown)}"
     }
+
+    sealed interface OperatorLine {
+        object Unverified : OperatorLine
+        data class Reported(val mcc: String?, val mnc: String?) : OperatorLine
+    }
+
+    // A stored value (including 460/0) cannot establish what the sample actually reported.
+    fun operatorLine(type: String, evidence: CellOperatorEvidence?): OperatorLine? =
+        when (type.uppercase(Locale.ROOT)) {
+            "LTE", "NR", "GSM", "WCDMA" -> if (evidence == null) OperatorLine.Unverified
+                else OperatorLine.Reported(evidence.mcc, evidence.mnc)
+            else -> null
+        }
 
     fun details(c: EditableCellItem, unknown: String): String {
         val radio = c.type.uppercase(Locale.ROOT)

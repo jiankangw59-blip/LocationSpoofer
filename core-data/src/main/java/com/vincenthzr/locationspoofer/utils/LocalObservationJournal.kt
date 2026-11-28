@@ -2,6 +2,7 @@ package com.vincenthzr.locationspoofer.utils
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteException
 import android.database.sqlite.SQLiteOpenHelper
@@ -19,7 +20,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 enum class ObservationKind { WIFI, CELL, BLE }
-data class LocalObservationMark(val inLatestRound: Boolean, val lastSeenAtMs: Long)
+data class LocalObservationMark(val inLatestRound: Boolean, val lastSeenAtMs: Long, val cellOperator: CellOperatorEvidence? = null)
 
 /** Optional UI evidence. Times are monotonic sample timestamps projected onto the local wall clock,
  * not persistence times and not independent hardware-supplied UTC timestamps. */
@@ -57,13 +58,13 @@ internal class ObservationKeys(secret: ByteArray, private val point: Long) {
     }
 }
 
-internal data class SeenReceipt(val round: Long, val time: Long)
+internal data class SeenReceipt(val round: Long, val time: Long, val cellOperator: CellOperatorEvidence? = null)
 internal data class JournalPoint(val round: Long, val revision: Long, val entries: Map<String, SeenReceipt>) {
-    fun advance(ticket: Long, version: Long, changes: Map<String, Long>): JournalPoint {
+    fun advance(ticket: Long, version: Long, changes: Map<String, Long>, operators: Map<String, CellOperatorEvidence> = emptyMap()): JournalPoint {
         if (ticket <= round || version <= 0) return this
         // Tickets order rounds across wall-clock changes, restarts and delayed callbacks.
         val next = LinkedHashMap<String, SeenReceipt>()
-        for ((id, time) in changes) if (time > 0 && next.size < MAX_ENTRIES) next[id] = SeenReceipt(ticket, time)
+        for ((id, time) in changes) if (time > 0 && next.size < MAX_ENTRIES) next[id] = SeenReceipt(ticket, time, operators[id])
         for ((id, value) in entries) {
             if (next.size >= MAX_ENTRIES) break
             next.putIfAbsent(id, value)
@@ -73,7 +74,7 @@ internal data class JournalPoint(val round: Long, val revision: Long, val entrie
     fun snapshot(version: Long, keys: ObservationKeys): LocalObservationSnapshot {
         if (round <= 0 || revision != version) return LocalObservationSnapshot.EMPTY
         return LocalObservationSnapshot(true) { kind, id ->
-            keys.key(kind, id)?.let(entries::get)?.let { LocalObservationMark(it.round == round, it.time) }
+            keys.key(kind, id)?.let(entries::get)?.let { LocalObservationMark(it.round == round, it.time, if (kind == ObservationKind.CELL) it.cellOperator else null) }
         }
     }
     fun encoded(): ByteArray = ByteArrayOutputStream().use { bytes ->
@@ -127,7 +128,7 @@ class LocalObservationJournal private constructor(context: Context, private val 
         override fun onCreate(db: SQLiteDatabase) {
             db.execSQL("CREATE TABLE meta(id INTEGER PRIMARY KEY,seq INTEGER NOT NULL,floor INTEGER NOT NULL,secret BLOB NOT NULL)")
             db.execSQL("INSERT INTO meta VALUES (1,0,0,?)", arrayOf(SecureRandom().generateSeed(32)))
-            db.execSQL("CREATE TABLE point(id INTEGER PRIMARY KEY,r INTEGER NOT NULL,v INTEGER NOT NULL,seen BLOB NOT NULL,origin TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE point(id INTEGER PRIMARY KEY,r INTEGER NOT NULL,v INTEGER NOT NULL,seen BLOB NOT NULL,origin TEXT NOT NULL,operator_evidence BLOB)")
         }
         override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) { throw SQLiteException("unsupported journal version") }
     }
@@ -137,6 +138,13 @@ class LocalObservationJournal private constructor(context: Context, private val 
     }
     private fun SQLiteDatabase.long(query: String) = compileStatement(query).use { it.simpleQueryForLong() }
 
+    private fun readPoint(c: Cursor): JournalPoint {
+        val index = c.getColumnIndex("operator_evidence")
+        val base = JournalPoint.decode(c.getLong(c.getColumnIndexOrThrow("r")), c.getLong(c.getColumnIndexOrThrow("v")),
+            c.getBlob(c.getColumnIndexOrThrow("seen")))
+        return if (index < 0 || c.isNull(index)) base else base.attachOperators(c.getBlob(index))
+    }
+
     @Synchronized fun beginRound(): Long = try {
         transaction { db ->
             db.execSQL("UPDATE meta SET seq=seq+1 WHERE id=1")
@@ -144,7 +152,8 @@ class LocalObservationJournal private constructor(context: Context, private val 
         }
     } catch (_: SQLiteException) { writeFailed(); 0L }
 
-    @Synchronized fun record(locationId: Long, round: Long, seen: Map<ObservationKind, Map<String, Long>>, pointTimestampMs: Long) {
+    @Synchronized fun record(locationId: Long, round: Long, seen: Map<ObservationKind, Map<String, Long>>, pointTimestampMs: Long,
+                             cellOperators: Map<String, CellOperatorEvidence> = emptyMap()) {
         if (locationId <= 0 || round <= 0 || pointTimestampMs <= 0) return
         try {
             val accepted = transaction { db ->
@@ -152,18 +161,34 @@ class LocalObservationJournal private constructor(context: Context, private val 
                     .use { it.moveToFirst() }
                 if (!permitted) return@transaction false
                 val origin = storeIdentity()
-                val previous = db.rawQuery("SELECT r,v,seen FROM point WHERE id=? AND origin=?", arrayOf(locationId.toString(), origin)).use {
-                    if (it.moveToFirst()) JournalPoint.decode(it.getLong(0), it.getLong(1), it.getBlob(2)) else JournalPoint.EMPTY
+                var hasOperatorColumn = false
+                val previous = db.rawQuery("SELECT * FROM point WHERE id=? AND origin=?", arrayOf(locationId.toString(), origin)).use {
+                    hasOperatorColumn = it.getColumnIndex("operator_evidence") >= 0
+                    if (it.moveToFirst()) readPoint(it) else JournalPoint.EMPTY
                 }
                 if (round <= previous.round) return@transaction false
                 val keys = db.rawQuery("SELECT secret FROM meta WHERE id=1", null).use { it.moveToFirst(); ObservationKeys(it.getBlob(0), locationId) }
                 val received = LinkedHashMap<String, Long>()
+                val operators = LinkedHashMap<String, CellOperatorEvidence>()
                 for ((kind, ids) in seen) for ((id, time) in ids) {
                     if (received.size >= JournalPoint.MAX_ENTRIES) break
-                    if (time > 0) keys.key(kind, id)?.let { received[it] = time }
+                    if (time > 0) keys.key(kind, id)?.let { token ->
+                        val oldTime = received[token]
+                        val op = if (kind == ObservationKind.CELL) cellOperators[id] else null
+                        if (oldTime == null || time > oldTime) {
+                            received[token] = time
+                            if (op == null) operators.remove(token) else operators[token] = op
+                        } else if (time == oldTime && operators[token] != op) operators.remove(token)
+                    }
                 }
-                val point = previous.advance(round, pointTimestampMs, received)
+                val point = previous.advance(round, pointTimestampMs, received, operators)
                 val row = ContentValues(5).apply { put("id", locationId); put("r", round); put("v", pointTimestampMs); put("seen", point.encoded()); put("origin", origin) }
+                point.encodeOperators()?.let { blob ->
+                    // Version .33 always reads/writes named columns; REPLACE from .33 clears this column.
+                    // Defer ALTER until an actual field receipt is written, never when just opening the UI.
+                    if (!hasOperatorColumn) db.execSQL("ALTER TABLE point ADD COLUMN operator_evidence BLOB")
+                    row.put("operator_evidence", blob)
+                }
                 db.insertWithOnConflict("point", null, row, SQLiteDatabase.CONFLICT_REPLACE).also {
                     if (it < 0) throw SQLiteException("journal insert failed")
                 }
@@ -195,10 +220,10 @@ class LocalObservationJournal private constructor(context: Context, private val 
     @Synchronized fun snapshot(locationId: Long, pointTimestampMs: Long): LocalObservationSnapshot {
         if (locationId <= 0 || pointTimestampMs <= 0 || failedSinceOpen || !file.isFile) return LocalObservationSnapshot.EMPTY
         return try {
-            store.readableDatabase.rawQuery("SELECT r,v,seen,secret FROM point,meta WHERE point.id=? AND meta.id=1 AND point.v=? AND origin=?",
+            store.readableDatabase.rawQuery("SELECT point.*,meta.secret FROM point,meta WHERE point.id=? AND meta.id=1 AND point.v=? AND origin=?",
                 arrayOf(locationId.toString(), pointTimestampMs.toString(), storeIdentity())).use {
                 if (!it.moveToFirst()) LocalObservationSnapshot.EMPTY else
-                    JournalPoint.decode(it.getLong(0), it.getLong(1), it.getBlob(2)).snapshot(pointTimestampMs, ObservationKeys(it.getBlob(3), locationId))
+                    readPoint(it).snapshot(pointTimestampMs, ObservationKeys(it.getBlob(it.getColumnIndexOrThrow("secret")), locationId))
             }
         } catch (_: SQLiteException) { LocalObservationSnapshot.EMPTY } catch (_: IOException) { LocalObservationSnapshot.EMPTY }
     }

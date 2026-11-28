@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cell_operator_saved_title">Saved: %1$s</string>
+    <string name="cell_operator_unverified">No observation verifies the saved operator codes.</string>
+    <string name="cell_operator_from_sample">This sample reported: MCC %1$s · MNC %2$s</string>
+    <string name="cell_operator_not_reported">not reported or invalid</string>
+</resources>

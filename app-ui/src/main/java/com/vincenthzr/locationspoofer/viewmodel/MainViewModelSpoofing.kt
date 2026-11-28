@@ -2,6 +2,7 @@ package com.vincenthzr.locationspoofer.viewmodel
 
 import com.vincenthzr.locationspoofer.utils.LocalObservationJournal
 import com.vincenthzr.locationspoofer.utils.ObservationKind
+import com.vincenthzr.locationspoofer.utils.SavedCellObservations
 import com.vincenthzr.locationspoofer.ui.BuildConfig
 import androidx.lifecycle.viewModelScope
 import com.vincenthzr.locationspoofer.ui.R
@@ -297,14 +298,15 @@ internal fun MainViewModel.toggleContinuousScanning() {
                         val cell = environmentScanner.scanCellObservation()
                         var bleSamples: Map<String, Long> = emptyMap()
                         val ble = environmentScanner.scanBluetoothObservation { bleSamples = it }
-                        val savedCellSamples = mutableMapOf<String, Long>()
+                        val savedCellSamples = SavedCellObservations()
                         val pointStamp = System.currentTimeMillis()
                         val id = saveEnvironmentData(lat, lng, wifi.recordsJson, cell.recordsJson, ble.recordsJson,
                             mergeNearby = true, collectionRouteId = routeId, collectionTimestampMs = pointStamp) { row, key ->
-                            cell.observedAtMs[row]?.let { t -> savedCellSamples[key] = maxOf(savedCellSamples[key] ?: t, t) }
+                            cell.observedAtMs[row]?.let { t -> savedCellSamples.accept(key, t, cell.cellOperators[row]) }
                         }
                         journal.record(id, round, mapOf(ObservationKind.WIFI to wifi.observedAtMs,
-                            ObservationKind.CELL to savedCellSamples, ObservationKind.BLE to bleSamples), pointStamp)
+                            ObservationKind.CELL to savedCellSamples.times, ObservationKind.BLE to bleSamples), pointStamp,
+                            cellOperators = savedCellSamples.operators)
                         savedIds += id
                         val wCount = parseWifiCount(wifi.recordsJson)
                         val cCount = org.json.JSONArray(cell.recordsJson).length()

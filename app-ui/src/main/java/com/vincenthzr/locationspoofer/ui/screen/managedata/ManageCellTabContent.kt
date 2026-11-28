@@ -200,7 +200,7 @@ internal fun ManageCellTabContent(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = CellEvidenceDisplay.title(cell, unknown),
+                                        text = stringResource(R.string.cell_operator_saved_title, CellEvidenceDisplay.title(cell, unknown)),
                                         fontSize = 13.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -241,7 +241,20 @@ internal fun ManageCellTabContent(
 
                                 Spacer(Modifier.height(3.dp))
 
-                                ObservationTimeText(marks[cell.cellKey])
+                                val mark = marks[cell.cellKey]
+                                ObservationTimeText(mark)
+                                val operatorText = when (val line = CellEvidenceDisplay.operatorLine(cell.type, mark?.cellOperator)) {
+                                    null -> null
+                                    CellEvidenceDisplay.OperatorLine.Unverified -> stringResource(R.string.cell_operator_unverified)
+                                    is CellEvidenceDisplay.OperatorLine.Reported -> {
+                                        val missing = stringResource(R.string.cell_operator_not_reported)
+                                        stringResource(R.string.cell_operator_from_sample, line.mcc ?: missing, line.mnc ?: missing)
+                                    }
+                                }
+                                if (operatorText != null) Text(
+                                    text = operatorText, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
 
                                 val details = CellEvidenceDisplay.details(cell, unknown)
 

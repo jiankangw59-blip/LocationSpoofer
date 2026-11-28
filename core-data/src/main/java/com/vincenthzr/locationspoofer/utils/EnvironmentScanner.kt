@@ -163,6 +163,7 @@ class EnvironmentScanner(private val context: Context) {
         val jsonArray = JSONArray()
         var read = ScanRead.SNAPSHOT
         val observed = mutableMapOf<Int, Long>()
+        val operators = mutableMapOf<Int, CellOperatorEvidence>()
         val startUs = SystemClock.elapsedRealtimeNanos() / 1_000L
         try {
             val allCellInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
@@ -230,14 +231,21 @@ class EnvironmentScanner(private val context: Context) {
 
             allCellInfo.forEach { cellInfo ->
                 val obj = JSONObject()
+                var operator: CellOperatorEvidence? = null
+                fun putOperator(mcc: String?, mnc: String?, readable: Boolean = true) {
+                    // Keep legacy numeric storage independent of optional field evidence.
+                    obj.put("mcc", mcc?.toIntOrNull() ?: 460)
+                    obj.put("mnc", mnc?.toIntOrNull() ?: 0)
+                    if (read == ScanRead.UPDATED && readable) operator = CellOperatorEvidence.fromReported(mcc, mnc)
+                }
                 obj.put("isRegistered", cellInfo.isRegistered)
 
                 when (cellInfo) {
                     is CellInfoLte -> {
+                        if (android.os.Build.VERSION.SDK_INT < 28) return@forEach
                         obj.put("type", "LTE")
                         val id = cellInfo.cellIdentity
-                        obj.put("mcc", id.mccString?.toIntOrNull() ?: 460)
-                        obj.put("mnc", id.mncString?.toIntOrNull() ?: 0)
+                        putOperator(id.mccString, id.mncString)
                         obj.put("tac", id.tac)
                         obj.put("ci", id.ci)
                         obj.put("pci", id.pci)
@@ -246,10 +254,10 @@ class EnvironmentScanner(private val context: Context) {
                     }
 
                     is CellInfoGsm -> {
+                        if (android.os.Build.VERSION.SDK_INT < 28) return@forEach
                         obj.put("type", "GSM")
                         val id = cellInfo.cellIdentity
-                        obj.put("mcc", id.mccString?.toIntOrNull() ?: 460)
-                        obj.put("mnc", id.mncString?.toIntOrNull() ?: 0)
+                        putOperator(id.mccString, id.mncString)
                         obj.put("lac", id.lac)
                         obj.put("cid", id.cid)
                         val signal = cellInfo.cellSignalStrength
@@ -257,28 +265,15 @@ class EnvironmentScanner(private val context: Context) {
                     }
 
                     is CellInfoWcdma -> {
+                        if (android.os.Build.VERSION.SDK_INT < 28) return@forEach
                         obj.put("type", "WCDMA")
                         val id = cellInfo.cellIdentity
-                        obj.put("mcc", id.mccString?.toIntOrNull() ?: 460)
-                        obj.put("mnc", id.mncString?.toIntOrNull() ?: 0)
+                        putOperator(id.mccString, id.mncString)
                         obj.put("lac", id.lac)
                         obj.put("cid", id.cid)
                         obj.put("psc", id.psc)
                         val signal = cellInfo.cellSignalStrength
                         putCapturedCellStrength(obj, signal.dbm)
-                    }
-
-                    is CellInfoNr -> {
-                        obj.put("type", "NR")
-                        val id = cellInfo.cellIdentity as? android.telephony.CellIdentityNr
-                        obj.put("mcc", id?.mccString?.toIntOrNull() ?: 460)
-                        obj.put("mnc", id?.mncString?.toIntOrNull() ?: 0)
-                        obj.put("tac", id?.tac ?: Int.MAX_VALUE)
-                        obj.put("nci", id?.nci ?: Long.MAX_VALUE)
-                        obj.put("pci", id?.pci ?: Int.MAX_VALUE)
-                        val signal =
-                            cellInfo.cellSignalStrength as? android.telephony.CellSignalStrengthNr
-                        putCapturedCellStrength(obj, signal?.dbm)
                     }
 
                     is CellInfoCdma -> {
@@ -290,12 +285,28 @@ class EnvironmentScanner(private val context: Context) {
                         val signal = cellInfo.cellSignalStrength
                         putCapturedCellStrength(obj, signal.dbm)
                     }
+
+                    else -> if (android.os.Build.VERSION.SDK_INT >= 29 && cellInfo is CellInfoNr) {
+                        obj.put("type", "NR")
+                        val id = cellInfo.cellIdentity as? android.telephony.CellIdentityNr
+                        putOperator(id?.mccString, id?.mncString, readable = id != null)
+                        obj.put("tac", id?.tac ?: Int.MAX_VALUE)
+                        obj.put("nci", id?.nci ?: Long.MAX_VALUE)
+                        obj.put("pci", id?.pci ?: Int.MAX_VALUE)
+                        val signal =
+                            cellInfo.cellSignalStrength as? android.telephony.CellSignalStrengthNr
+                        putCapturedCellStrength(obj, signal?.dbm)
+                    }
                 }
                 // Keep DB JSON identical; timestamp evidence is sidecar-only and uses the array index until the row is saved.
                 if (read == ScanRead.UPDATED && obj.has("type")) {
                     @Suppress("DEPRECATION")
                     val sampled = window.sampleEpochMs(cellInfo.timeStamp / 1_000L)
-                    if (sampled != null) observed[jsonArray.length()] = sampled
+                    if (sampled != null) {
+                        val row = jsonArray.length()
+                        observed[row] = sampled
+                        operator?.let { operators[row] = it }
+                    }
                 }
                 jsonArray.put(obj)
             }
@@ -304,9 +315,10 @@ class EnvironmentScanner(private val context: Context) {
         } catch (e: Exception) {
             read = if (e is SecurityException) ScanRead.DENIED else ScanRead.FAILED
             observed.clear()
+            operators.clear()
             e.printStackTrace()
         }
-        RadioCapture(jsonArray.toString(), captureStatus(read, jsonArray.length(), observed.size), observed)
+        RadioCapture(jsonArray.toString(), captureStatus(read, jsonArray.length(), observed.size), observed, operators)
     }
 
     /** Kept for callers that consume records only; the first-party collection UI uses the richer outcome. */

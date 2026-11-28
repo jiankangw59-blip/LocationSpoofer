@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="cell_operator_saved_title">القيمة المحفوظة: %1$s</string>
+    <string name="cell_operator_unverified">لا يوجد رصد يؤكد رموز المشغّل المحفوظة.</string>
+    <string name="cell_operator_from_sample">ما أبلغ عنه النظام في هذه العيّنة: MCC %1$s · MNC %2$s</string>
+    <string name="cell_operator_not_reported">لم تُرسل قيمة صالحة</string>
+</resources>

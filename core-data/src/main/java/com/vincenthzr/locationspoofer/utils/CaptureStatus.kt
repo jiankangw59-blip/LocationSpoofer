@@ -24,5 +24,6 @@ internal fun captureStatus(read: ScanRead, returnedRows: Int, observed: Int): Ca
 }
 
 data class RadioCapture<K>(
-    val recordsJson: String, val status: CaptureStatus, val observedAtMs: Map<K, Long> = emptyMap()
+    val recordsJson: String, val status: CaptureStatus, val observedAtMs: Map<K, Long> = emptyMap(),
+    val cellOperators: Map<K, CellOperatorEvidence> = emptyMap()
 )
