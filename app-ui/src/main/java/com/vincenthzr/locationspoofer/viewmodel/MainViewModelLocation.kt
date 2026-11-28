@@ -34,7 +34,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 // MainViewModel 的当前位置获取、原生定位回退与模拟能力评估相关扩展函数
 
 // 当前位置仅由页面显式请求或空输入回填。等待定位期间已经选了别的点，就丢弃迟到结果。
-internal fun MainViewModel.fetchCurrentLocation(ctx: Context, forceCallback: ((Double, Double) -> Unit)? = null) {
+internal fun MainViewModel.fetchCurrentLocation(ctx: Context, forPointSelection: Boolean = false, forceCallback: ((Double, Double) -> Unit)? = null) {
     val start = _uiState.value
     if (forceCallback == null && start.latitudeInput.isNotEmpty() && start.longitudeInput.isNotEmpty()) return
     fun notifyUser(message: Int) {
@@ -57,6 +57,7 @@ internal fun MainViewModel.fetchCurrentLocation(ctx: Context, forceCallback: ((D
                 showCoordinateError = false, locationLookupFeedback = state.locationLookupFeedback?.takeIf { it.matchesPoint(lat, lng) })
             if (_uiState.compareAndSet(state, next)) break
         }
+        if (forPointSelection) schedulePointHeightForSelection()
         if (amap == null) notifyUser(R.string.native_location_success)
         forceCallback?.invoke(lat, lng)
     }
@@ -167,6 +168,7 @@ internal fun MainViewModel.selectSearchPoint(poi: AppPoiItem) {
             locationLookupFeedback = null
         )
     }
+    schedulePointHeightForSelection()
     evaluateMockCapabilities()
 }
 
@@ -252,6 +254,7 @@ internal fun MainViewModel.selectCollectedLocation(locationId: Long) {
                     pinnedLocationName = name
                 )
             }
+            schedulePointHeightForSelection()
             evaluateMockCapabilitiesSuspend(record.location.lat, record.location.lng)
         }
     }

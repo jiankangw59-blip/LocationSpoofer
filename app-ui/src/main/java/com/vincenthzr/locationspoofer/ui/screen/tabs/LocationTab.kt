@@ -81,6 +81,7 @@ import com.vincenthzr.locationspoofer.viewmodel.saveCurrentLocation
 import com.vincenthzr.locationspoofer.viewmodel.selectCollectedRoute
 import com.vincenthzr.locationspoofer.viewmodel.selectCollectedLocation
 import com.vincenthzr.locationspoofer.viewmodel.previewPointHeight
+import com.vincenthzr.locationspoofer.viewmodel.schedulePointHeightForSelection
 import com.vincenthzr.locationspoofer.viewmodel.setPointHeightAutomatic
 import com.vincenthzr.locationspoofer.viewmodel.setAltitude
 import com.vincenthzr.locationspoofer.viewmodel.setAltitudeVariation
@@ -274,7 +275,7 @@ fun LocationTab(
                     MapControlButton(
                         icon = Icons.Rounded.MyLocation,
                         onClick = {
-                            viewModel.fetchCurrentLocation(context) { lat, lng ->
+                            viewModel.fetchCurrentLocation(context, forPointSelection = true) { lat, lng ->
                                 mapController?.animateCamera(lat, lng, 16f)
                             }
                         }
@@ -555,47 +556,54 @@ fun LocationTab(
 
     if (spoofingUiState.showStartSpoofingDialog) {
         val target = uiState.latitudeInput to uiState.longitudeInput
-        // No lookup on map movement, recomposition, or opening the dialog. Only a button may send the point.
-        var heightRequest by remember(target, uiState.pointHeightAutomatic) { mutableStateOf<PointHeightAction?>(null) }
-        LaunchedEffect(target, uiState.pointHeightAutomatic, heightRequest) {
-            val action = heightRequest ?: return@LaunchedEffect
-            if (!uiState.pointHeightAutomatic) return@LaunchedEffect
-            viewModel.previewPointHeight()
-            val current = viewModel.uiState.value
-            heightRequest = null
-            if (action.mayStart(
-                    current.latitudeInput to current.longitudeInput, current.pointHeightAutomatic,
-                    viewModel.spoofingUiState.value.showStartSpoofingDialog, current.pointHeightForCurrentTarget
-                )) {
+        key(target, uiState.pointHeightAutomatic) {
+            val dialogScope = rememberCoroutineScope()
+            var pending by remember { mutableStateOf(false) }
+            fun startAndClose() {
                 viewModel.startSpoofing()
                 onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false))
             }
-        }
-        StartSpoofingDialog(
-            uiState = uiState,
-            isDark = isDark,
-            onDismiss = { onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false)) },
-            heightPreview = if (heightRequest != null) PointHeightUi.Loading
-                else uiState.pointHeightForCurrentTarget.takeUnless { it === PointHeightUi.Loading } ?: PointHeightUi.Idle,
-            onAutomaticHeightChange = viewModel::setPointHeightAutomatic,
-            onPreviewHeight = { if (heightRequest == null) heightRequest = PointHeightAction(target, startWhenReady = false) },
-            onConfirm = {
-                if (uiState.pointHeightAutomatic) {
-                    if (heightRequest == null) heightRequest = PointHeightAction(target, startWhenReady = true)
-                } else {
-                    viewModel.startSpoofing()
-                    onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false))
+            fun retryHeight(startWhenReady: Boolean) {
+                if (pending) return
+                pending = true
+                val action = PointHeightAction(target, startWhenReady)
+                dialogScope.launch {
+                    try {
+                        viewModel.previewPointHeight()
+                        val current = viewModel.uiState.value
+                        if (action.mayStart(
+                                current.latitudeInput to current.longitudeInput, current.pointHeightAutomatic,
+                                viewModel.spoofingUiState.value.showStartSpoofingDialog, current.pointHeightForCurrentTarget
+                            )) startAndClose()
+                    } finally {
+                        pending = false
+                    }
                 }
-            },
-            onToggleWifi = viewModel::toggleMockWifi,
-            onToggleCell = viewModel::toggleMockCell,
-            onToggleBluetooth = viewModel::toggleMockBluetooth,
-            onToggleJitter = viewModel::toggleEnableJitter,
-            onToggleRestartApps = viewModel::toggleRestartAppsOnSpoof,
-            onAltitudeChange = viewModel::setAltitude,
-            onAltitudeVariationChange = viewModel::setAltitudeVariation,
-            onSatelliteCountChange = viewModel::setSatelliteCount
-        )
+            }
+            StartSpoofingDialog(
+                uiState = uiState,
+                isDark = isDark,
+                onDismiss = { onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false)) },
+                heightPreview = if (pending) PointHeightUi.Loading else uiState.pointHeightForCurrentTarget,
+                onAutomaticHeightChange = viewModel::setPointHeightAutomatic,
+                onPreviewHeight = { retryHeight(false) },
+                onConfirm = {
+                    if (!uiState.pointHeightAutomatic || uiState.pointHeightForCurrentTarget is PointHeightUi.Ready) {
+                        startAndClose() // The model validates the current target before publishing.
+                    } else {
+                        retryHeight(true)
+                    }
+                },
+                onToggleWifi = viewModel::toggleMockWifi,
+                onToggleCell = viewModel::toggleMockCell,
+                onToggleBluetooth = viewModel::toggleMockBluetooth,
+                onToggleJitter = viewModel::toggleEnableJitter,
+                onToggleRestartApps = viewModel::toggleRestartAppsOnSpoof,
+                onAltitudeChange = viewModel::setAltitude,
+                onAltitudeVariationChange = viewModel::setAltitudeVariation,
+                onSatelliteCountChange = viewModel::setSatelliteCount
+            )
+        }
     }
 
     if (spoofingUiState.showCustomCoordDialog) {
@@ -607,6 +615,7 @@ fun LocationTab(
             onConfirm = { lat, lng ->
                 viewModel.updateLatitude(lat)
                 viewModel.updateLongitude(lng)
+                viewModel.schedulePointHeightForSelection()
                 lat.toDoubleOrNull()?.let { latVal ->
                     lng.toDoubleOrNull()?.let { lngVal ->
                         mapController?.animateCamera(latVal, lngVal, 17.5f)

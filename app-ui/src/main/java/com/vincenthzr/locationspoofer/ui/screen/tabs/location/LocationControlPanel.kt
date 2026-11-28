@@ -35,6 +35,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.data.model.AppState
+import com.vincenthzr.locationspoofer.data.model.PointHeightUi
+import com.vincenthzr.locationspoofer.utils.MotionRealism
+import com.vincenthzr.locationspoofer.viewmodel.previewPointHeight
+import com.vincenthzr.locationspoofer.viewmodel.setPointHeightAutomatic
+import kotlinx.coroutines.launch
 import com.vincenthzr.locationspoofer.data.model.SavedLocation
 import com.vincenthzr.locationspoofer.ui.screen.ActionButtons
 import com.vincenthzr.locationspoofer.ui.screen.CoordinateInputCard
@@ -42,6 +47,37 @@ import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
 import com.vincenthzr.locationspoofer.viewmodel.MainViewModel
 import kotlin.math.roundToInt
+
+/** Display the selected target's settings only; lookup is driven by the ViewModel, not by recomposition. */
+@Composable
+private fun PointHeightSummary(uiState: AppState, onAutomaticChange: (Boolean) -> Unit, onRetry: () -> Unit) {
+    val status = uiState.pointHeightForCurrentTarget
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(stringResource(R.string.point_height_home_title), modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelLarge)
+        Switch(checked = uiState.pointHeightAutomatic, onCheckedChange = onAutomaticChange)
+    }
+    val summary = if (!uiState.pointHeightAutomatic) stringResource(R.string.point_height_home_manual) else when (status) {
+        PointHeightUi.Idle -> stringResource(R.string.point_height_home_wait)
+        PointHeightUi.Loading -> stringResource(R.string.point_height_loading)
+        PointHeightUi.Unavailable -> stringResource(R.string.point_height_unavailable)
+        is PointHeightUi.Ready -> stringResource(R.string.point_height_home_result, status.surfaceMslMeters,
+            status.ellipsoidMeters, MotionRealism.Level.fromId(uiState.realismLevel).altitudeAmplitudeM)
+    }
+    Text(summary, style = MaterialTheme.typography.bodySmall,
+        color = if (uiState.pointHeightAutomatic && status === PointHeightUi.Unavailable)
+            MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+    if (uiState.pointHeightAutomatic) {
+        if (status is PointHeightUi.Ready && status.fromCache) {
+            Text(stringResource(R.string.point_height_cached), style = MaterialTheme.typography.labelSmall)
+        }
+        Text(stringResource(R.string.point_height_home_notice), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (status === PointHeightUi.Unavailable) TextButton(onClick = onRetry) {
+            Text(stringResource(R.string.point_height_retry))
+        }
+    }
+}
 
 @Composable
 fun LocationControlPanel(
@@ -301,6 +337,11 @@ fun LocationControlPanel(
                         onCustomClick = onCustomClick
                     )
 
+                    val panelScope = rememberCoroutineScope()
+                    PointHeightSummary(
+                        uiState, onAutomaticChange = viewModel::setPointHeightAutomatic,
+                        onRetry = { panelScope.launch { viewModel.previewPointHeight() } }
+                    )
                     Spacer(Modifier.height(12.dp))
 
                     ActionButtons(

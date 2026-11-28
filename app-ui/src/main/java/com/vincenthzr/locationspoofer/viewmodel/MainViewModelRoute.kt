@@ -116,9 +116,12 @@ internal fun MainViewModel.joystickMaxSpeedMs(): Float =
 
 /** 首页地图确认选点 */
 
-internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging: Boolean = false) {
+internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging: Boolean = false, userSelection: Boolean = false) {
     val samePoint = configurationTargetMatches(lat, lng)
-    if (!samePoint) discardLocationLookupForNewPoint(lat, lng)
+    if (!samePoint) {
+        discardLocationLookupForNewPoint(lat, lng)
+        if (isDragging) discardPendingPointHeight()
+    }
     val finalizingDrag = !isDragging && pointConfigurationJob != null &&
         pointConfigurationJob === draggingPointConfigurationJob
     if (!samePoint || finalizingDrag) {
@@ -134,6 +137,7 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
             isSavingConfig = if (samePoint) it.isSavingConfig else false
         )
     }
+    if (userSelection && !isDragging) schedulePointHeightForSelection()
     evaluateMockCapabilities()
     val state = _uiState.value
     if (samePoint && pointConfigurationJob?.isActive == true) return
@@ -142,7 +146,7 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
             // Only a point session explicitly started with terrain lookup may send a new target.
             // Do not publish intermediate drag points with the old point's height.
             val automaticHeight = state.pointHeightAutomatic && locationRepository.activePointUsesAutomaticHeight()
-            if (automaticHeight && isDragging) return@launch
+            if (automaticHeight && (isDragging || (!userSelection && !wasPointHeightSelected(lat, lng)))) return@launch
             val pointHeight = if (automaticHeight) resolvePointHeight(lat, lng) ?: run {
                 if (configurationTargetMatches(lat, lng) && _uiState.value.pointHeightAutomatic) notifyPointHeightUnavailable()
                 return@launch
@@ -553,6 +557,7 @@ internal fun MainViewModel.loadSavedLocation(loc: SavedLocation) {
             wifiLoadStatus = if (wifiCount > 0) com.vincenthzr.locationspoofer.data.model.WifiLoadStatus.DONE else com.vincenthzr.locationspoofer.data.model.WifiLoadStatus.IDLE
         )
     }
+    schedulePointHeightForSelection()
 }
 
 internal fun MainViewModel.removeSavedLocation(location: SavedLocation) {

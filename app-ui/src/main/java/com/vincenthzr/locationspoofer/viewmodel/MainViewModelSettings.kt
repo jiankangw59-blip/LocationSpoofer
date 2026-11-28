@@ -764,7 +764,7 @@ internal fun MainViewModel.handleSpoofingIntent(intent: SpoofingIntent) {
         is SpoofingIntent.ConfirmMapPoint -> {
             mapMoveJob?.cancel()
             mapMoveJob = null
-            confirmMapPoint(intent.lat, intent.lng)
+            confirmMapPoint(intent.lat, intent.lng, userSelection = intent.userSelection)
         }
 
         is SpoofingIntent.MapPointMoved -> {

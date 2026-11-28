@@ -2,7 +2,7 @@
 <resources>
     <string name="point_height_auto">تحديد الارتفاع تلقائيًا لهذه النقطة</string>
     <string name="point_height_surface_desc">المصدر: Copernicus DEM GLO-90 (شبكة بدقة نحو 90 مترًا). قد يشمل ارتفاع السطح المباني والأشجار ولا يحدد الطابق.</string>
-    <string name="point_height_network_notice">عند البحث أو البدء تُستخدم أولًا نتيجة محفوظة لهذه النقطة. إذا لم تتوفر، تُرسل إحداثيات الهدف إلى Open-Meteo.</string>
+    <string name="point_height_network_notice">يُبحث تلقائيًا عن الارتفاع عند تحديد النقطة أو إدخال إحداثياتها. تُستخدم النتيجة المحفوظة أولًا؛ وإلا تُرسل إحداثيات الهدف إلى Open-Meteo.</string>
     <string name="point_height_result">ارتفاع السطح عن متوسط مستوى البحر: %1$.1f م\nالارتفاع المستخدم عن إهليلج WGS84: %2$.1f م\nالحد الأقصى للتغير التلقائي: ±%3$.1f م</string>
     <string name="point_height_cached">تُستخدم نتيجة تقديرية محفوظة لهذا الهدف.</string>
     <string name="point_height_loading">جارٍ البحث عن ارتفاع الهدف…</string>
@@ -10,4 +10,9 @@
     <string name="point_height_retry">إعادة البحث عن الارتفاع</string>
     <string name="point_height_preview">البحث عن الارتفاع فقط</string>
     <string name="point_height_start">جلب الارتفاع والبدء</string>
+    <string name="point_height_home_title">تحديد ارتفاع النقطة تلقائيًا</string>
+    <string name="point_height_home_manual">وضع يدوي: يمكن ضبط الارتفاع قبل البدء. السرعة في سيناريو الثبات مضبوطة على 0 م/ث.</string>
+    <string name="point_height_home_wait">حدّد نقطة أو أدخل الإحداثيين لتحديد الارتفاع تلقائيًا.</string>
+    <string name="point_height_home_result">ارتفاع السطح عن البحر %1$.1f م · ارتفاع إهليلج WGS84 ‏%2$.1f م\nحد تغير الارتفاع ±%3$.1f م · سرعة الثبات مضبوطة على 0 م/ث</string>
+    <string name="point_height_home_notice">تقدير السطح من Copernicus GLO-90. تُرسل إحداثيات الهدف إلى Open-Meteo عند عدم وجود نتيجة محفوظة.</string>
 </resources>

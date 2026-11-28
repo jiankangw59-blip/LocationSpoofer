@@ -54,8 +54,8 @@ class MainViewModel(
     internal var gaitRecordingJob: Job? = null
     internal var mockCapabilitiesJob: Job? = null
     internal var environmentUpdateJob: Job? = null
-    internal var pointHeightRequest = 0L
-    internal val pointHeightMutex = kotlinx.coroutines.sync.Mutex()
+    internal var lastExplicitHeightKey: String? = null
+    internal val pointHeightRequests = AutoPointHeightRequests<com.vincenthzr.locationspoofer.data.elevation.TargetElevation>(viewModelScope)
     internal val pointHeightCache by lazy {
         com.vincenthzr.locationspoofer.data.elevation.PointHeightCache(java.io.File(context.cacheDir, "point-surface-glo90-v1"))
     }

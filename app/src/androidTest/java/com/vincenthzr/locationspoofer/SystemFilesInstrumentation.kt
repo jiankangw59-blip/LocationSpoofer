@@ -101,6 +101,11 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (lookupArguments?.getString("check") == "point-elevation-prefetch") {
+            val output = checkPointElevationPrefetch()
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (lookupArguments?.getString("check") == "point-elevation-source") {
             val output = checkPointElevationSource()
             finish(if (output.getString("result") == "PASS") -1 else 0, output)

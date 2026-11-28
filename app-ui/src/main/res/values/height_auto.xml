@@ -2,7 +2,7 @@
 <resources>
     <string name="point_height_auto">Automatic height for this point</string>
     <string name="point_height_surface_desc">Source: Copernicus DEM GLO-90 (about 90 m grid). This is an estimated surface height; it may include buildings or trees and cannot determine a floor.</string>
-    <string name="point_height_network_notice">Height lookup uses a saved result for this point first. Otherwise, tapping Look up or Start sends the target coordinates to Open-Meteo.</string>
+    <string name="point_height_network_notice">Selecting a target or entering its coordinates automatically looks up its height. A cached estimate is used first; otherwise the target coordinates are sent to Open-Meteo.</string>
     <string name="point_height_result">Surface above mean sea level: %1$.1f m\nWGS84 ellipsoid height used: %2$.1f m\nAutomatic fluctuation limit: ±%3$.1f m</string>
     <string name="point_height_cached">Using a cached estimate for this target.</string>
     <string name="point_height_loading">Looking up the target height…</string>
@@ -10,4 +10,9 @@
     <string name="point_height_retry">Retry height lookup</string>
     <string name="point_height_preview">Look up height only</string>
     <string name="point_height_start">Get height and start</string>
+    <string name="point_height_home_title">Automatic fixed-point height</string>
+    <string name="point_height_home_manual">Manual height: enter or adjust it before starting. Stationary speed is set to 0 m/s.</string>
+    <string name="point_height_home_wait">Select a point or enter both coordinates for automatic height.</string>
+    <string name="point_height_home_result">Surface (MSL) %1$.1f m · WGS84 ellipsoid %2$.1f m\nHeight variation limit ±%3$.1f m · stationary speed set to 0 m/s</string>
+    <string name="point_height_home_notice">Copernicus GLO-90 surface estimate · Open-Meteo receives target coordinates on a cache miss.</string>
 </resources>

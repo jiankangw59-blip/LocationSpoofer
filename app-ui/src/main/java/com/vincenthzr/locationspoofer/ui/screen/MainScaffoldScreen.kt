@@ -4,6 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -24,6 +26,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -95,6 +99,7 @@ fun MainScaffoldScreen(
     var mapController by remember { mutableStateOf<AppMapController?>(null) }
     var pendingImportedLocationId by remember { mutableStateOf<Long?>(null) }
     val currentSelectedTab by rememberUpdatedState(selectedTab)
+    val pointMapGesture = remember(uiState.mapEngine) { PointMapGesture() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val isLocationPage = selectedTab == BottomTab.Location.ordinal && currentSubScreen == MainSubScreen.None
     DisposableEffect(viewModel, lifecycle, isLocationPage) {
@@ -240,7 +245,25 @@ fun MainScaffoldScreen(
                 // 底层地图层（定位与路线 Tab 共享）
                 Box(modifier = Modifier.fillMaxSize()) {
                     AppMapView(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().pointerInput(pointMapGesture, isLocationPage) {
+                            if (!isLocationPage) return@pointerInput
+                            try {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                    pointMapGesture.down()
+                                    val slop = viewConfiguration.touchSlop
+                                    do {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        val primary = event.changes.firstOrNull { it.id == down.id }
+                                        if (primary != null && (primary.position - down.position).getDistance() > slop)
+                                            pointMapGesture.drag()
+                                    } while (event.changes.any { it.pressed })
+                                    pointMapGesture.up()?.let { (lat, lng) ->
+                                        viewModel.handleSpoofingIntent(SpoofingIntent.ConfirmMapPoint(lat, lng, true))
+                                    }
+                                }
+                            } finally { pointMapGesture.reset() }
+                        },
                         mapEngine = uiState.mapEngine,
                         isDomestic = viewModel.isDomesticEnvironment(),
                         onMapReady = { controller ->
@@ -259,13 +282,16 @@ fun MainScaffoldScreen(
                                     viewModel.handleSpoofingIntent(
                                         SpoofingIntent.ConfirmMapPoint(
                                             lat,
-                                            lng
+                                            lng,
+                                            userSelection = pointMapGesture.idle(lat, lng)
                                         )
                                     )
                                 }
                             }
                             controller.setOnCameraMoveListener { lat, lng ->
-                                if (currentSelectedTab == BottomTab.Location.ordinal) {
+                                // Programmatic camera animations already have an explicit final target.
+                                // Never replace that selection with animation frames.
+                                if (currentSelectedTab == BottomTab.Location.ordinal && pointMapGesture.move()) {
                                     viewModel.handleSpoofingIntent(
                                         SpoofingIntent.MapPointMoved(
                                             lat,
