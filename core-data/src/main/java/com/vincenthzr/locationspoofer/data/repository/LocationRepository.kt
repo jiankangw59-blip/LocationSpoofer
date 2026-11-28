@@ -42,7 +42,7 @@ class LocationRepository(
 
     /** Read the committed session, never the pending choice in the editing UI. No terrain lookup. */
     fun activePointUsesAutomaticHeight(): Boolean =
-        PointHeightBinding.isBound(configManager.lastConfigSnapshot())
+        configManager.activePointUsesAutomaticHeight()
 
     suspend fun checkRootAccess(): Boolean = rootManager.checkRootAccess(currentRootSolution())
 

@@ -141,6 +141,10 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     /** 返回最近一次发布的完整配置，供进程或设备重启后的恢复流程复用环境数据。 */
     fun lastConfigSnapshot(): JSONObject? = lastJson?.let { JSONObject(it.toString()) }
 
+    // The committed object is never mutated; patches always copy it before publication.
+    // Avoid encoding/decoding the entire radio environment on every map drag.
+    internal fun activePointUsesAutomaticHeight(): Boolean = PointHeightBinding.isBound(lastJson)
+
     /** Writes coordinates and location-bound address fields from an IO dispatcher. */
     fun putPosition(
         json: JSONObject,
