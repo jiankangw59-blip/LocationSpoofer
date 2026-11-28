@@ -32,6 +32,7 @@ fun ManageCellTabContent(
     onEditCell: (EditableCellItem) -> Unit,
     onDeleteCell: (String) -> Unit
 ) {
+    val unknown = stringResource(R.string.cell_evidence_unknown)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -96,6 +97,12 @@ fun ManageCellTabContent(
             fontSize = 11.5.sp,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f),
             lineHeight = 16.sp
+        )
+
+        Text(
+            text = stringResource(R.string.cell_evidence_source_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         val isAutoSelected = selectedCellKey == null
@@ -190,7 +197,7 @@ fun ManageCellTabContent(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = "${cell.type.uppercase()} • MCC:${cell.mcc} MNC:${cell.mnc}",
+                                        text = CellEvidenceDisplay.title(cell, unknown),
                                         fontSize = 13.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -231,13 +238,7 @@ fun ManageCellTabContent(
 
                                 Spacer(Modifier.height(3.dp))
 
-                                val details = when (cell.type.uppercase()) {
-                                    "LTE" -> "TAC: ${cell.tac}  •  CI: ${cell.ci}  •  PCI: ${cell.pci}  •  ${cell.dbm} dBm"
-                                    "NR" -> "TAC: ${cell.tac}  •  NCI: ${cell.nci}  •  PCI: ${cell.pci}  •  ${cell.dbm} dBm"
-                                    "GSM" -> "LAC: ${cell.lac}  •  CID: ${cell.cid}  •  ${cell.dbm} dBm"
-                                    "WCDMA" -> "LAC: ${cell.lac}  •  CID: ${cell.cid}  •  PSC: ${cell.psc}  •  ${cell.dbm} dBm"
-                                    else -> "Key: ${cell.cellKey}  •  ${cell.dbm} dBm"
-                                }
+                                val details = CellEvidenceDisplay.details(cell, unknown)
 
                                 Text(
                                     text = details,

@@ -117,6 +117,7 @@ fun ModernEditDataDialog(
                         ssid = lw.device.ssid,
                         frequency = lw.device.frequency,
                         level = lw.locationWifi.level,
+                        remoteSource = lw.locationWifi.remoteSource,
                         capabilities = lw.device.capabilities,
                         vendor = lw.device.vendor,
                         isConnected = false,

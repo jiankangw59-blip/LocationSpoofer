@@ -1,5 +1,6 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
+import com.vincenthzr.locationspoofer.utils.WifiRecordEvidence
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vincenthzr.locationspoofer.data.db.EnvironmentDao
@@ -92,31 +93,27 @@ class ManageDataViewModel(private val environmentDao: EnvironmentDao) : ViewMode
                 ?: enteredBssid.uppercase()
             val device = com.vincenthzr.locationspoofer.data.db.WifiDevice(
                 bssid = storageBssid,
-                ssid = ssid.trim(),
+                ssid = ssid,
                 frequency = frequency,
-                capabilities = capabilities.ifBlank { "[WPA2-PSK-CCMP][RSN]" },
+                capabilities = capabilities,
                 vendor = vendor
             )
             environmentDao.insertWifiDevice(device)
             environmentDao.insertLocationWifi(
-                com.vincenthzr.locationspoofer.data.db.LocationWifi(
-                    locationId = locationId,
-                    bssid = storageBssid,
-                    level = level
-                )
+                WifiRecordEvidence.linkForSave(existing, device, locationId, level)
             )
 
             if (isConnected) {
                 val conn = com.vincenthzr.locationspoofer.data.db.LocationConnectedWifi(
                     locationId = locationId,
                     bssid = storageBssid,
-                    ssid = ssid.trim(),
+                    ssid = ssid,
                     vendor = vendor,
                     macAddress = storageBssid,
                     frequency = frequency,
                     linkSpeed = 65,
                     level = level,
-                    capabilities = capabilities.ifBlank { "[WPA2-PSK-CCMP][RSN]" },
+                    capabilities = capabilities,
                     networkId = 1,
                     wifiStandard = 6
                 )

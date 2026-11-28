@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wifi_evidence_unknown_ssid">اسم الشبكة غير معروف</string>
+    <string name="wifi_evidence_unknown_signal">الإشارة غير معروفة</string>
+    <string name="wifi_evidence_estimated_signal">تقدير الدليل: %1$d dBm (ليس نتيجة مسح)</string>
+    <string name="wifi_evidence_recorded_signal">الإشارة المسجلة: %1$d dBm</string>
+    <string name="wifi_evidence_unknown_security">نوع الأمان غير معروف</string>
+    <string name="wifi_evidence_frequency_only">%1$d MHz · القناة غير معروفة</string>
+</resources>

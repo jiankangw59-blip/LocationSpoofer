@@ -193,7 +193,7 @@ fun ScannerMapScreen(
 
         // 右上角实时扫描统计卡片 (放在状态胶囊下方)
         AnimatedVisibility(
-            visible = uiState.isContinuousScanning || uiState.scannedWifiCount > 0 || uiState.scannedCellCount > 0 || uiState.scannedBluetoothCount > 0,
+            visible = uiState.isContinuousScanning || uiState.scannedWifiCount > 0 || uiState.scannedCellCount > 0 || uiState.lastBleScanStatus != null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -229,13 +229,14 @@ fun ScannerMapScreen(
                     )
                     Text(
                         text = stringResource(
-                            R.string.scanned_bt_count,
+                            R.string.ble_observation_total,
                             uiState.scannedBluetoothCount
                         ),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    BleObservationStatusText(uiState.lastBleScanStatus)
                 }
             }
         }

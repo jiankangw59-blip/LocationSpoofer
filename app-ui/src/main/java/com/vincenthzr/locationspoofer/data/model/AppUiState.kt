@@ -145,6 +145,7 @@ data class AppState(
     val scannedWifiCount: Int = 0,
     val scannedCellCount: Int = 0,
     val scannedBluetoothCount: Int = 0,
+    val lastBleScanStatus: com.vincenthzr.locationspoofer.utils.BleScanStatus? = null,
     val hookedApps: List<AppInfoItem> = emptyList(),
     /** system_server 级定位 Hook 勾选生效的目标 App 包名集合 */
     val systemHookPackages: Set<String> = emptySet(),

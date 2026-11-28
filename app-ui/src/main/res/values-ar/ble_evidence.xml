@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ble_observation_total">تقارير BLE المتراكمة: %1$d</string>
+    <string name="ble_observation_waiting">البلوتوث المحلي: لم يبدأ الرصد</string>
+    <string name="ble_observation_received">البلوتوث المحلي: وصلت تقارير في هذه الجولة</string>
+    <string name="ble_observation_empty">البلوتوث المحلي: لم تصل إعلانات خلال فترة المسح</string>
+    <string name="ble_observation_off">البلوتوث المحلي: البلوتوث متوقف</string>
+    <string name="ble_observation_denied">البلوتوث المحلي: الإذن غير متاح</string>
+    <string name="ble_observation_unavailable">البلوتوث المحلي: الماسح غير متاح</string>
+    <string name="ble_observation_failed">البلوتوث المحلي: فشل المسح</string>
+</resources>

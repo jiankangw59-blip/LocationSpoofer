@@ -8,7 +8,8 @@ data class EditableWifiItem(
     val capabilities: String,
     val vendor: String,
     val isConnected: Boolean,
-    val isDesignated: Boolean
+    val isDesignated: Boolean,
+    val remoteSource: String? = null
 )
 
 data class EditableCellItem(

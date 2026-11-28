@@ -339,7 +339,8 @@ fun EditCellDialog(
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Text(
-                            text = stringResource(R.string.cell_dbm_label, dbm),
+                            text = if (CellEvidenceDisplay.isReportableDbm(dbm)) stringResource(R.string.cell_dbm_label, dbm)
+                                else stringResource(R.string.cell_evidence_edit_signal_unknown),
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             fontWeight = FontWeight.Medium

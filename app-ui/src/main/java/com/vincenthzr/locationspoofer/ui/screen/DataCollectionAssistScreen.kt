@@ -50,6 +50,7 @@ private val REQUIRED_PERMISSIONS: List<String>
         add(Manifest.permission.READ_PHONE_STATE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
         }
     }
 
@@ -256,13 +257,14 @@ fun DataCollectionAssistScreen(
                     ScanCountBadge(
                         icon = Icons.Rounded.Bluetooth,
                         tint = AccentOrange,
-                        text = stringResource(R.string.scanned_bt_count, uiState.scannedBluetoothCount),
+                        text = stringResource(R.string.ble_observation_total, uiState.scannedBluetoothCount),
                         modifier = Modifier.weight(1f)
                     )
                 }
 
                 Spacer(Modifier.height(14.dp))
 
+                BleObservationStatusText(uiState.lastBleScanStatus)
                 Text(
                     text = stringResource(R.string.data_collection_assist_hint),
                     fontSize = 11.5.sp,

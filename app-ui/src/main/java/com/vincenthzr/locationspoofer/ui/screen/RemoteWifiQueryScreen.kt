@@ -48,6 +48,7 @@ import com.vincenthzr.locationspoofer.data.model.RemoteWifiRegion
 import com.vincenthzr.locationspoofer.data.model.RemoteCellRadio
 import com.vincenthzr.locationspoofer.data.model.RemoteWifiMetadataStatus
 import com.vincenthzr.locationspoofer.ui.R
+import com.vincenthzr.locationspoofer.utils.WifiRecordEvidence
 import com.vincenthzr.locationspoofer.viewmodel.RemoteWifiError
 import com.vincenthzr.locationspoofer.viewmodel.RemoteWifiViewModel
 import org.koin.androidx.compose.koinViewModel
@@ -312,11 +313,13 @@ fun RemoteWifiQueryScreen(
                                     Text(if (ssid.isEmpty()) stringResource(R.string.remote_wifi_empty_ssid)
                                         else stringResource(R.string.remote_wifi_ssid, ssid))
                                 }
-                                val frequency = metadata.frequencyMHz
+                                val frequency = metadata.frequencyMHz?.takeIf { WifiRecordEvidence.hasFrequency(it) }
+                                val channel = metadata.channel?.takeIf { it > 0 }
                                 if (frequency != null) {
-                                    Text(stringResource(R.string.remote_wifi_frequency, frequency, metadata.channel ?: 0))
-                                } else if (appleFrequency == null) {
-                                    metadata.channel?.let { Text(stringResource(R.string.remote_wifi_channel_unknown_band, it)) }
+                                    Text(if (channel != null) stringResource(R.string.remote_wifi_frequency, frequency, channel)
+                                        else stringResource(R.string.wifi_evidence_frequency_only, frequency))
+                                } else if (appleFrequency == null && channel != null) {
+                                    Text(stringResource(R.string.remote_wifi_channel_unknown_band, channel))
                                 }
                                 metadata.encryption?.let { Text(stringResource(R.string.remote_wifi_encryption, it), style = MaterialTheme.typography.bodySmall) }
                                 metadata.observedAt?.let {

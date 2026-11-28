@@ -1,6 +1,7 @@
 package com.vincenthzr.locationspoofer.viewmodel
 
 import androidx.lifecycle.viewModelScope
+import com.vincenthzr.locationspoofer.utils.capturedCellDbmForStorage
 import com.vincenthzr.locationspoofer.data.db.LocationRecord
 import com.vincenthzr.locationspoofer.data.db.LocationWifi
 import com.vincenthzr.locationspoofer.data.db.WifiDevice
@@ -180,7 +181,7 @@ internal suspend fun MainViewModel.saveEnvironmentData(
                 com.vincenthzr.locationspoofer.data.db.LocationCell(
                     locId,
                     cellKey,
-                    cellSignalDbm(obj, i),
+                    capturedCellDbmForStorage(obj) { cellSignalDbm(obj, i) },
                     obj.optBoolean("isRegistered", false)
                 )
             )

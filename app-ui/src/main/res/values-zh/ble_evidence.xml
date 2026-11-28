@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ble_observation_total">蓝牙累计观测：%1$d</string>
+    <string name="ble_observation_waiting">本机蓝牙：尚未采集</string>
+    <string name="ble_observation_received">本机蓝牙：本轮有观测</string>
+    <string name="ble_observation_empty">本机蓝牙：本轮扫描窗口未收到广播</string>
+    <string name="ble_observation_off">本机蓝牙：蓝牙已关闭</string>
+    <string name="ble_observation_denied">本机蓝牙：缺少权限</string>
+    <string name="ble_observation_unavailable">本机蓝牙：扫描器不可用</string>
+    <string name="ble_observation_failed">本机蓝牙：本轮扫描失败</string>
+</resources>

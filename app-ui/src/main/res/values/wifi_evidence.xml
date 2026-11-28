@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wifi_evidence_unknown_ssid">SSID unknown</string>
+    <string name="wifi_evidence_unknown_signal">Signal unknown</string>
+    <string name="wifi_evidence_estimated_signal">Directory estimate: %1$d dBm (not a scan)</string>
+    <string name="wifi_evidence_recorded_signal">Recorded signal: %1$d dBm</string>
+    <string name="wifi_evidence_unknown_security">Security unknown</string>
+    <string name="wifi_evidence_frequency_only">%1$d MHz · channel unknown</string>
+</resources>

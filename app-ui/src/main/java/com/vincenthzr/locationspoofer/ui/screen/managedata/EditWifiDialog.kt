@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.vincenthzr.locationspoofer.ui.R
+import com.vincenthzr.locationspoofer.utils.WifiRecordEvidence
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
@@ -48,9 +49,9 @@ fun EditWifiDialog(
     val isEdit = initialItem != null
     var ssid by remember { mutableStateOf(initialItem?.ssid ?: "") }
     var bssid by remember { mutableStateOf(initialItem?.bssid ?: "") }
-    var level by remember { mutableIntStateOf(initialItem?.level ?: -55) }
+    var level by remember { mutableIntStateOf(initialItem?.level ?: 0) }
     var frequency by remember { mutableIntStateOf(initialItem?.frequency ?: 0) }
-    var capabilities by remember { mutableStateOf(initialItem?.capabilities ?: "[WPA2-PSK-CCMP][RSN]") }
+    var capabilities by remember { mutableStateOf(initialItem?.capabilities.orEmpty()) }
     var vendor by remember { mutableStateOf(initialItem?.vendor ?: "") }
     var isConnected by remember { mutableStateOf(initialItem?.isConnected ?: false) }
     var isDesignated by remember { mutableStateOf(initialItem?.isDesignated ?: true) }
@@ -216,7 +217,7 @@ fun EditWifiDialog(
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Text(
-                            text = stringResource(R.string.wifi_level_label, level),
+                            text = wifiSignalLabel(level, initialItem?.takeIf { it.level == level }?.remoteSource),
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             fontWeight = FontWeight.Medium
@@ -228,7 +229,7 @@ fun EditWifiDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            listOf(-40 to "-40 极强", -55 to "-55 良好", -70 to "-70 一般", -85 to "-85 微弱").forEach { (lvl, lbl) ->
+                            listOf(0 to stringResource(R.string.wifi_frequency_unknown), -40 to "-40 极强", -55 to "-55 良好", -70 to "-70 一般", -85 to "-85 微弱").forEach { (lvl, lbl) ->
                                 val isChosen = level == lvl
                                 Box(
                                     modifier = Modifier
@@ -261,7 +262,7 @@ fun EditWifiDialog(
                     ) {
                         Text(
                             text = stringResource(R.string.wifi_freq_label) + " · " +
-                                if (frequency > 0) "$frequency MHz" else stringResource(R.string.wifi_frequency_unknown),
+                                if (WifiRecordEvidence.hasFrequency(frequency)) "$frequency MHz" else stringResource(R.string.wifi_frequency_unknown),
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             fontWeight = FontWeight.Medium
@@ -327,7 +328,7 @@ fun EditWifiDialog(
                         )
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("[WPA2-PSK-CCMP][RSN]" to "WPA2", "[WPA3-SAE]" to "WPA3", "[ESS]" to "OPEN").forEach { (cap, tag) ->
+                            listOf("" to stringResource(R.string.wifi_frequency_unknown), "[WPA2-PSK-CCMP][RSN]" to "WPA2", "[WPA3-SAE]" to "WPA3", "[ESS]" to "OPEN").forEach { (cap, tag) ->
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(6.dp))
@@ -430,10 +431,9 @@ fun EditWifiDialog(
                             val finalBssid = bssid.ifBlank {
                                 String.format(Locale.US, "02:00:00:%02X:%02X:%02X", (0..255).random(), (0..255).random(), (0..255).random())
                             }
-                            val finalSsid = ssid.ifBlank { "Mock_WiFi" }
                             onSave(
                                 finalBssid,
-                                finalSsid,
+                                ssid,
                                 frequency,
                                 level,
                                 capabilities,

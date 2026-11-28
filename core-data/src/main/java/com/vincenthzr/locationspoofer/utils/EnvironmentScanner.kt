@@ -14,13 +14,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.launch
 import kotlin.coroutines.resume
 
 @android.annotation.SuppressLint("MissingPermission", "NewApi")
@@ -59,11 +56,7 @@ class EnvironmentScanner(private val context: Context) {
 
             val connectionInfo = wifiManager.connectionInfo
             val connectedBssid = if (isWifiConnected) connectionInfo?.bssid else null
-            try {
-                wifiManager.startScan()
-            } catch (e: Throwable) {
-            }
-            val results = wifiManager.scanResults ?: emptyList()
+            val results = RecentWifiCapture.read(context, wifiManager)
 
             // 1. 优先提取当前正在连接的 Wi-Fi 信息
             if (isWifiConnected && connectedBssid != null && connectedBssid != "02:00:00:00:00:00") {
@@ -77,7 +70,7 @@ class EnvironmentScanner(private val context: Context) {
                         rawSsid ?: ""
                     }
 
-                val match = results.find { it.BSSID == connectedBssid }
+                val match = results.find { it.BSSID.equals(connectedBssid, ignoreCase = true) }
                 // 如果是 unknown ssid 或为空，尝试从扫描结果中恢复真实 SSID
                 if (cleanSsid == "<unknown ssid>" || cleanSsid.isEmpty()) {
                     if (match != null && !match.SSID.isNullOrEmpty()) {
@@ -90,7 +83,7 @@ class EnvironmentScanner(private val context: Context) {
                 connObj.put("level", connectionInfo.rssi)
                 connObj.put("frequency", connectionInfo.frequency)
                 connObj.put("channel", MacVendorHelper.frequencyToChannel(connectionInfo.frequency))
-                connObj.put("capabilities", match?.capabilities ?: "[WPA2-PSK-CCMP][ESS]")
+                connObj.put("capabilities", match?.capabilities.orEmpty())
                 try {
                     connObj.put("macAddress", connectionInfo.macAddress)
                 } catch (e: Throwable) {
@@ -136,6 +129,8 @@ class EnvironmentScanner(private val context: Context) {
                 }
             }
             resultObj.put("nearbyWifi", nearbyArray)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             e.printStackTrace()
             resultObj.put("isConnected", false)
@@ -195,7 +190,7 @@ class EnvironmentScanner(private val context: Context) {
                     obj.put("lac", cellLoc.lac)
                     obj.put("cid", cellLoc.cid)
                     obj.put("psc", cellLoc.psc)
-                    obj.put("dbm", -85) // 虚拟一个信号值
+                    putCapturedCellStrength(obj, null)
                     obj.put("mcc", 460)
                     obj.put("mnc", 0)
                     jsonArray.put(obj)
@@ -206,7 +201,7 @@ class EnvironmentScanner(private val context: Context) {
                     obj.put("networkId", cellLoc.networkId)
                     obj.put("systemId", cellLoc.systemId)
                     obj.put("basestationId", cellLoc.baseStationId)
-                    obj.put("dbm", -85)
+                    putCapturedCellStrength(obj, null)
                     jsonArray.put(obj)
                 }
             }
@@ -225,7 +220,7 @@ class EnvironmentScanner(private val context: Context) {
                         obj.put("ci", id.ci)
                         obj.put("pci", id.pci)
                         val signal = cellInfo.cellSignalStrength
-                        obj.put("dbm", signal.dbm)
+                        putCapturedCellStrength(obj, signal.dbm)
                     }
 
                     is CellInfoGsm -> {
@@ -236,7 +231,7 @@ class EnvironmentScanner(private val context: Context) {
                         obj.put("lac", id.lac)
                         obj.put("cid", id.cid)
                         val signal = cellInfo.cellSignalStrength
-                        obj.put("dbm", signal.dbm)
+                        putCapturedCellStrength(obj, signal.dbm)
                     }
 
                     is CellInfoWcdma -> {
@@ -248,7 +243,7 @@ class EnvironmentScanner(private val context: Context) {
                         obj.put("cid", id.cid)
                         obj.put("psc", id.psc)
                         val signal = cellInfo.cellSignalStrength
-                        obj.put("dbm", signal.dbm)
+                        putCapturedCellStrength(obj, signal.dbm)
                     }
 
                     is CellInfoNr -> {
@@ -261,7 +256,7 @@ class EnvironmentScanner(private val context: Context) {
                         obj.put("pci", id?.pci ?: Int.MAX_VALUE)
                         val signal =
                             cellInfo.cellSignalStrength as? android.telephony.CellSignalStrengthNr
-                        obj.put("dbm", signal?.dbm ?: 0)
+                        putCapturedCellStrength(obj, signal?.dbm)
                     }
 
                     is CellInfoCdma -> {
@@ -271,7 +266,7 @@ class EnvironmentScanner(private val context: Context) {
                         obj.put("systemId", id.systemId)
                         obj.put("basestationId", id.basestationId)
                         val signal = cellInfo.cellSignalStrength
-                        obj.put("dbm", signal.dbm)
+                        putCapturedCellStrength(obj, signal.dbm)
                     }
                 }
                 jsonArray.put(obj)
@@ -282,81 +277,58 @@ class EnvironmentScanner(private val context: Context) {
         jsonArray.toString()
     }
 
+    /** Kept for callers that consume records only; the first-party collection UI uses the richer outcome. */
+    suspend fun scanBluetooth(): String = scanBluetoothObservation().recordsJson
+
     @SuppressLint("MissingPermission")
-    suspend fun scanBluetooth(): String = withContext(Dispatchers.IO) {
-        val bluetoothManager =
-            context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter = bluetoothManager?.adapter
-        val scanner = adapter?.bluetoothLeScanner
-
-        val jsonArray = JSONArray()
-        if (scanner == null || !adapter.isEnabled) {
-            return@withContext jsonArray.toString()
-        }
-
+    suspend fun scanBluetoothObservation(): BleObservation = withContext(Dispatchers.IO) {
         try {
-            suspendCancellableCoroutine<Unit> { cont ->
-                val resultsList = mutableListOf<ScanResult>()
-                val callback = object : ScanCallback() {
-                    override fun onScanResult(callbackType: Int, result: ScanResult?) {
-                        if (result != null) {
-                            resultsList.add(result)
-                        }
-                    }
-
-                    override fun onBatchScanResults(results: MutableList<ScanResult>?) {
-                        if (results != null) {
-                            resultsList.addAll(results)
-                        }
-                    }
-
-                    override fun onScanFailed(errorCode: Int) {
-                    }
-                }
-
-                // 开始扫描
-                scanner.startScan(callback)
-
-                // 2 秒后停止扫描；绑定到外层挂起协程的 context，避免脱离生命周期成为孤儿协程
-                kotlinx.coroutines.CoroutineScope(cont.context).launch {
-                    delay(2000)
-                    try {
-                        scanner.stopScan(callback)
-                    } catch (e: Exception) {
-                    }
-
-                    // 去重并转换为 JSON
-                    val deduped = resultsList.distinctBy { it.device.address }
-                    deduped.forEach { res ->
-                        val obj = JSONObject()
-                        obj.put("address", res.device.address)
-                        obj.put("name", res.device.name ?: "")
-                        obj.put("rssi", res.rssi)
-
-                        // 如果可用，解析扫描记录的字节
-                        val recordBytes = res.scanRecord?.bytes
-                        if (recordBytes != null) {
-                            val hexString = recordBytes.joinToString("") { "%02X".format(it) }
-                            obj.put("scanRecordHex", hexString)
-                        }
-                        jsonArray.put(obj)
-                    }
-                    if (cont.isActive) {
-                        cont.resume(Unit)
-                    }
-                }
-
-                cont.invokeOnCancellation {
-                    try {
-                        scanner.stopScan(callback)
-                    } catch (e: Exception) {
-                    }
-                }
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+                ?: return@withContext BleObservation(BleScanStatus.UNAVAILABLE)
+            // This collector associates BLE reports with location; its manifest does not assert neverForLocation.
+            fun hasCapturePermissions(): Boolean {
+                fun granted(permission: String) =
+                    context.checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val sdk = android.os.Build.VERSION.SDK_INT
+                val locationGranted = granted(android.Manifest.permission.ACCESS_FINE_LOCATION) ||
+                    (sdk < 29 && granted(android.Manifest.permission.ACCESS_COARSE_LOCATION))
+                return locationGranted && (sdk < 31 || (granted(android.Manifest.permission.BLUETOOTH_SCAN) &&
+                    granted(android.Manifest.permission.BLUETOOTH_CONNECT)))
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+            if (!hasCapturePermissions()) return@withContext BleObservation(BleScanStatus.PERMISSION_DENIED)
+            if (!adapter.isEnabled) return@withContext BleObservation(BleScanStatus.ADAPTER_OFF)
+            val scanner = adapter.bluetoothLeScanner ?: return@withContext BleObservation(BleScanStatus.UNAVAILABLE)
 
-        jsonArray.toString()
+            lateinit var callback: ScanCallback
+            val window = collectBleWindow<ScanResult>(2000L, start = { offer, fail ->
+                callback = object : ScanCallback() {
+                    override fun onScanResult(callbackType: Int, result: ScanResult?) { result?.let(offer) }
+                    override fun onBatchScanResults(results: MutableList<ScanResult>?) { results?.forEach(offer) }
+                    override fun onScanFailed(errorCode: Int) { fail() }
+                }
+                scanner.startScan(callback)
+            }, stop = { scanner.stopScan(callback) })
+            // A changed radio/permission at either end is not a successful empty observation.
+            if (!hasCapturePermissions()) return@withContext BleObservation(BleScanStatus.PERMISSION_DENIED)
+            if (!adapter.isEnabled) return@withContext BleObservation(BleScanStatus.ADAPTER_OFF)
+            if (window == null) return@withContext BleObservation(BleScanStatus.FAILED)
+            val records = JSONArray()
+            window.distinctBy { it.device.address }.forEach { res ->
+                val obj = JSONObject().put("address", res.device.address)
+                    .put("name", res.device.name ?: "").put("rssi", res.rssi)
+                res.scanRecord?.bytes?.let { bytes ->
+                    obj.put("scanRecordHex", bytes.joinToString("") { "%02X".format(it) })
+                }
+                records.put(obj)
+            }
+            BleObservation.completed(records.toString(), records.length())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: SecurityException) {
+            BleObservation(BleScanStatus.PERMISSION_DENIED)
+        } catch (_: RuntimeException) {
+            // BLE is optional; its failure must not discard this round's Wi-Fi/cell observations.
+            BleObservation(BleScanStatus.FAILED)
+        }
     }
 }

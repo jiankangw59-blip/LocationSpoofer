@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ble_observation_total">BLE reports: %1$d</string>
+    <string name="ble_observation_waiting">Local BLE: not sampled yet</string>
+    <string name="ble_observation_received">Local BLE: reports received this round</string>
+    <string name="ble_observation_empty">Local BLE: no reports in this scan window</string>
+    <string name="ble_observation_off">Local BLE: Bluetooth is off</string>
+    <string name="ble_observation_denied">Local BLE: permission missing</string>
+    <string name="ble_observation_unavailable">Local BLE: scanner unavailable</string>
+    <string name="ble_observation_failed">Local BLE: scan failed</string>
+</resources>

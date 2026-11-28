@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wifi_evidence_unknown_ssid">SSID 未知</string>
+    <string name="wifi_evidence_unknown_signal">信号未知</string>
+    <string name="wifi_evidence_estimated_signal">目录估算：%1$d dBm（非现场扫描）</string>
+    <string name="wifi_evidence_recorded_signal">记录信号：%1$d dBm</string>
+    <string name="wifi_evidence_unknown_security">安全类型未知</string>
+    <string name="wifi_evidence_frequency_only">%1$d MHz · 信道未知</string>
+</resources>

@@ -257,7 +257,8 @@ internal fun MainViewModel.toggleContinuousScanning() {
             isContinuousScanning = true,
             scannedWifiCount = 0,
             scannedCellCount = 0,
-            scannedBluetoothCount = 0
+            scannedBluetoothCount = 0,
+            lastBleScanStatus = null
         )
     }
     continuousScanJob = viewModelScope.launch(Dispatchers.IO) {
@@ -288,17 +289,17 @@ internal fun MainViewModel.toggleContinuousScanning() {
                     withContext(NonCancellable) {
                         val wifiJson = environmentScanner.scanWifi()
                         val cellJson = environmentScanner.scanCell()
-                        val bluetoothJson = environmentScanner.scanBluetooth()
-                        val id = saveEnvironmentData(lat, lng, wifiJson, cellJson, bluetoothJson, mergeNearby = true, collectionRouteId = routeId)
+                        val ble = environmentScanner.scanBluetoothObservation()
+                        val id = saveEnvironmentData(lat, lng, wifiJson, cellJson, ble.recordsJson, mergeNearby = true, collectionRouteId = routeId)
                         savedIds += id
                         val wCount = parseWifiCount(wifiJson)
                         val cCount = org.json.JSONArray(cellJson).length()
-                        val bCount = org.json.JSONArray(bluetoothJson).length()
                         _uiState.update {
                             it.copy(
                                 scannedWifiCount = it.scannedWifiCount + wCount,
                                 scannedCellCount = it.scannedCellCount + cCount,
-                                scannedBluetoothCount = it.scannedBluetoothCount + bCount
+                                scannedBluetoothCount = it.scannedBluetoothCount + ble.count,
+                                lastBleScanStatus = ble.status
                             )
                         }
                     }

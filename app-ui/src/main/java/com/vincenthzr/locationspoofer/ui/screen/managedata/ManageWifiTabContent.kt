@@ -17,10 +17,18 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vincenthzr.locationspoofer.utils.WifiRecordEvidence
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
+
+@Composable
+internal fun wifiSignalLabel(level: Int, source: String?): String = when (WifiRecordEvidence.signalKind(level, source)) {
+    WifiRecordEvidence.SignalKind.UNKNOWN -> stringResource(R.string.wifi_evidence_unknown_signal)
+    WifiRecordEvidence.SignalKind.ESTIMATE -> stringResource(R.string.wifi_evidence_estimated_signal, level)
+    WifiRecordEvidence.SignalKind.RECORD -> stringResource(R.string.wifi_evidence_recorded_signal, level)
+}
 
 @Composable
 fun ManageWifiTabContent(
@@ -190,7 +198,7 @@ fun ManageWifiTabContent(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        text = wifi.ssid.ifBlank { "<Hidden SSID>" },
+                                        text = wifi.ssid.ifBlank { stringResource(R.string.wifi_evidence_unknown_ssid) },
                                         fontSize = 13.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface
@@ -232,20 +240,18 @@ fun ManageWifiTabContent(
                                 Spacer(Modifier.height(3.dp))
 
                                 Text(
-                                    text = "${wifi.bssid}  •  ${wifi.level} dBm  •  " +
-                                        if (wifi.frequency > 0) "${wifi.frequency} MHz" else stringResource(R.string.wifi_frequency_unknown),
+                                    text = "${wifi.bssid}  •  ${wifiSignalLabel(wifi.level, wifi.remoteSource)}  •  " +
+                                        if (WifiRecordEvidence.hasFrequency(wifi.frequency)) "${wifi.frequency} MHz" else stringResource(R.string.wifi_frequency_unknown),
                                     fontSize = 11.5.sp,
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                 )
 
-                                if (wifi.capabilities.isNotBlank()) {
-                                    Text(
-                                        text = wifi.capabilities,
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
-                                        maxLines = 1
-                                    )
-                                }
+                                Text(
+                                    text = wifi.capabilities.ifBlank { stringResource(R.string.wifi_evidence_unknown_security) },
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+                                    maxLines = 1
+                                )
                             }
 
                             Box(
