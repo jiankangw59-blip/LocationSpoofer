@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.utils.AltitudeModel
+import com.vincenthzr.locationspoofer.utils.MotionRealism
 import java.util.Locale
 
 /** 基准海拔 + 变化范围，定点模拟与路线模拟的设置弹窗共用 */
@@ -38,11 +39,14 @@ fun AltitudeSettingsCard(
     variationM: Int,
     onAltitudeChange: (String) -> Unit,
     onVariationChange: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    stationaryLevelId: Int? = null
 ) {
     var slider by remember(variationM) { mutableFloatStateOf(variationM.toFloat()) }
     val range = slider.toInt()
     val base = AltitudeModel.parseBaseMeters(altitudeInput)
+    val displayedAmplitude = if (stationaryLevelId == null) range.toDouble() else
+        AltitudeModel.stationaryAmplitudeMeters(range.toDouble(), MotionRealism.Level.fromId(stationaryLevelId).altitudeAmplitudeM)
 
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -68,13 +72,13 @@ fun AltitudeSettingsCard(
                 )
                 if (base != null) {
                     Text(
-                        if (range == 0) {
+                        if (displayedAmplitude == 0.0) {
                             stringResource(R.string.altitude_fixed_value, formatMeters(base))
                         } else {
                             stringResource(
                                 R.string.altitude_range_value,
-                                formatMeters(base - range),
-                                formatMeters(base + range)
+                                formatMeters(base - displayedAmplitude),
+                                formatMeters(base + displayedAmplitude)
                             )
                         },
                         fontSize = 12.sp,
@@ -133,7 +137,7 @@ fun AltitudeSettingsCard(
                 )
             )
             Text(
-                stringResource(R.string.altitude_variation_desc),
+                stringResource(if (stationaryLevelId == null) R.string.altitude_variation_desc else R.string.altitude_stationary_range_desc),
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
             )

@@ -31,8 +31,8 @@ import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
 import com.vincenthzr.locationspoofer.ui.theme.AccentOrange
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
+import com.vincenthzr.locationspoofer.ui.components.recordTimeText
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -62,8 +62,7 @@ fun SwipeableDataListItem(
     val offsetX = remember { Animatable(0f) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-    val timeStr =
-        remember(item.location.timestamp) { dateFormat.format(Date(item.location.timestamp)) }
+    val timeStr = recordTimeText(item.location.timestamp, dateFormat)
 
     val wifiCount = (if (item.connectedWifi != null) 1 else 0) + item.wifis.size
     val cellCount = item.cells.size

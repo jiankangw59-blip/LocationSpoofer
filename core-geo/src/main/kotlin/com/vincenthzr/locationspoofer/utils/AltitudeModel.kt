@@ -78,9 +78,13 @@ object AltitudeModel {
     private fun driftAmplitude(rangeM: Double, driftM: Double) =
         min(driftM.coerceAtLeast(0.0), rangeM / 2)
 
+    /** Maximum deviation about a known stationary height, used both for sampling and for its preview. */
+    fun stationaryAmplitudeMeters(variationM: Double, driftM: Double): Double =
+        driftAmplitude(variationM.coerceIn(0.0, MAX_VARIATION_M.toDouble()), driftM)
+
     /** A known stationary height is already the anchor; only receiver error varies with time. */
     fun stationaryAltitude(baseM: Double, variationM: Double, driftM: Double, epochMs: Long): Double {
-        val amplitude = driftAmplitude(variationM.coerceIn(0.0, MAX_VARIATION_M.toDouble()), driftM)
+        val amplitude = stationaryAmplitudeMeters(variationM, driftM)
         if (amplitude == 0.0) return baseM
         return baseM + amplitude * drift.value(epochMs / 1000.0)
     }

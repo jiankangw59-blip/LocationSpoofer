@@ -238,6 +238,7 @@ data class LocationWithCell(
 
 @Serializable
 data class CompleteLocation(
+    @Serializable(with = BackupLocationRecordSerializer::class)
     @Embedded val location: LocationRecord,
     @Relation(parentColumn = "id", entityColumn = "locationId")
     val connectedWifi: LocationConnectedWifi? = null,

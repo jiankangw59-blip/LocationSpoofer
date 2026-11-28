@@ -16,6 +16,25 @@ class AltitudeModelTest {
     }
 
 
+    @Test
+    fun stationaryPreviewUsesTheSameBoundAsTheSample() {
+        for ((variation, level, expected) in listOf(
+            Triple(35.0, MotionRealism.Level.MEDIUM, 3.0),
+            Triple(35.0, MotionRealism.Level.OFF, 0.0),
+            Triple(1.0, MotionRealism.Level.HIGH, 0.5),
+            Triple(0.0, MotionRealism.Level.HIGH, 0.0),
+            Triple(-1.0, MotionRealism.Level.LOW, 0.0),
+            Triple(101.0, MotionRealism.Level.HIGH, 5.0)
+        )) {
+            val bound = AltitudeModel.stationaryAmplitudeMeters(variation, level.altitudeAmplitudeM)
+            assertEquals(expected, bound, 0.0)
+            for (sec in 0L..3_600L step 11) {
+                val height = AltitudeModel.stationaryAltitude(25.0, variation, level.altitudeAmplitudeM, sec * 1000)
+                assertTrue(height in (25.0 - bound)..(25.0 + bound))
+            }
+        }
+    }
+
     private val start = CoordinateUtils.LatLng(23.1066, 113.3245)
     private val t0 = 1_789_398_037_217L
 

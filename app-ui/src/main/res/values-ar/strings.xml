@@ -451,4 +451,6 @@
     <string name="collection_no_saved_points">لم يتم حفظ أي نقاط. تحقق من الموقع وأذونات الجمع ثم حاول مجددًا.</string>
     <string name="collection_info_save_failed">تعذر حفظ تفاصيل النقطة. حاول مجددًا.</string>
     <string name="invalid_target_altitude">أدخل ارتفاعًا محدودًا بالأمتار، مثل ‎-12.5 أو 0.</string>
+    <string name="record_time_unknown">وقت التسجيل غير معروف</string>
+    <string name="altitude_stationary_range_desc">يعرض النطاق أعلاه حدود الارتفاع الثابت عن إهليلج WGS84 وفق المستوى الحالي، وليس ارتفاع الخريطة عن سطح البحر. يحدد شريط التمرير الحد الأقصى للتغير، وقد لا تصل القراءات إلى طرفي النطاق.</string>
 </resources>

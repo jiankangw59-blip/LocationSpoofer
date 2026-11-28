@@ -649,4 +649,6 @@
     <string name="collection_route_delete_title">删除采集路线</string>
     <string name="collection_route_delete_message">删除“%1$s”及其全部采样数据？</string>
     <string name="local_collection_records_count">%1$d 个点位 · %2$d 条路线</string>
+    <string name="record_time_unknown">记录时间未知</string>
+    <string name="altitude_stationary_range_desc">顶部显示当前档位的定点高度范围，采用 WGS84 椭球高，不是地图上的海拔。滑块设置浮动上限；实际读数不一定到达边界。</string>
 </resources>

@@ -649,4 +649,6 @@ Error details: %s</string>
     <string name="collection_route_delete_title">Delete collected route</string>
     <string name="collection_route_delete_message">Delete “%1$s” and all its collected samples?</string>
     <string name="local_collection_records_count">%1$d points · %2$d routes</string>
+    <string name="record_time_unknown">Record time unknown</string>
+    <string name="altitude_stationary_range_desc">The range above uses the current stationary profile and WGS84 ellipsoid height, not map elevation. The slider sets a limit; readings need not reach either boundary.</string>
 </resources>

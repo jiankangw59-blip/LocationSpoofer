@@ -205,6 +205,7 @@ fun StartSpoofingDialog(
                     AltitudeSettingsCard(
                         altitudeInput = uiState.altitudeInput,
                         variationM = uiState.altitudeVariationM,
+                        stationaryLevelId = uiState.realismLevel,
                         onAltitudeChange = onAltitudeChange,
                         onVariationChange = onAltitudeVariationChange
                     )

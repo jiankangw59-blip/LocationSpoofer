@@ -32,9 +32,15 @@ import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
 import com.vincenthzr.locationspoofer.ui.theme.AccentOrange
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
+import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+@Composable
+internal fun recordTimeText(timestamp: Long, format: DateFormat): String =
+    if (timestamp == 0L) stringResource(R.string.record_time_unknown)
+    else remember(timestamp, format) { format.format(Date(timestamp)) }
 
 @Composable
 fun LocalEnvironmentDataDialog(
@@ -292,7 +298,7 @@ fun LocalEnvironmentDataDialog(
                         items(filteredList, key = { it.location.id }) { item ->
                             LocalDataItem(
                                 item = item,
-                                timeStr = timeFormat.format(Date(item.location.timestamp)),
+                                timeStr = recordTimeText(item.location.timestamp, timeFormat),
                                 isFavorited = favoritedLocationIds.contains(item.location.id) ||
                                     favoritedCoordsFallback.contains(item.location.lat to item.location.lng),
                                 onClick = {

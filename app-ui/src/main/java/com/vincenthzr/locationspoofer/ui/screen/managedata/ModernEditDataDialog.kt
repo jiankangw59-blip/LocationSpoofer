@@ -29,8 +29,8 @@ import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
 import com.vincenthzr.locationspoofer.ui.theme.AccentGreen
 import com.vincenthzr.locationspoofer.ui.theme.AccentOrange
 import com.vincenthzr.locationspoofer.ui.theme.noRippleClickable
+import com.vincenthzr.locationspoofer.ui.components.recordTimeText
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 import androidx.compose.foundation.BorderStroke
@@ -86,8 +86,7 @@ fun ModernEditDataDialog(
     var btToDelete by remember { mutableStateOf<String?>(null) }
 
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-    val timeStr =
-        remember(item.location.timestamp) { dateFormat.format(Date(item.location.timestamp)) }
+    val timeStr = recordTimeText(item.location.timestamp, dateFormat)
 
     val wifiList = remember(item, selectedWifiBssid) {
         val list = mutableListOf<EditableWifiItem>()
