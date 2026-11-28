@@ -64,6 +64,7 @@ jobs:
           mkdir -p "$artifact_dir"
           cp app/build/outputs/apk/global/debug/app-global-arm64-v8a-debug.apk "$artifact_dir/"
           cp app/build/outputs/apk/androidTest/global/debug/app-global-debug-androidTest.apk "$artifact_dir/"
+          python3 tools/verify-test-runners.py "$ANDROID_HOME/build-tools/37.0.0/aapt2" "$artifact_dir/app-global-debug-androidTest.apk"
           cd "$artifact_dir"
           sha256sum ./*.apk > SHA256SUMS
           printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT

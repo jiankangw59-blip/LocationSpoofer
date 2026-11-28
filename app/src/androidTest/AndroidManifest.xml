@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- AGP applies its configured runner to the first instrumentation element. -->
+    <instrumentation
+        android:name="com.vincenthzr.locationspoofer.SystemFilesInstrumentation"
+        android:targetPackage="com.suseoaa.locationspoofer.fork" />
     <instrumentation
         android:name="com.vincenthzr.locationspoofer.RadioResourcesInstrumentation"
         android:targetPackage="com.suseoaa.locationspoofer.fork" />
