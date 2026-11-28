@@ -1,0 +1,10 @@
+Elevation source and attribution
+
+Surface estimates: Copernicus DEM GLO-90 (approximately 90 m), obtained via Open-Meteo. Heights are originally relative to the EGM2008 geoid and are converted locally to WGS84 ellipsoid heights using the Android altitude model. No claim of measured handset, building-floor or bare-earth altitude is made.
+
+Open-Meteo: https://open-meteo.com/en/docs/elevation-api
+Service terms: https://open-meteo.com/en/terms (free endpoint: non-commercial only).
+Open-Meteo data licence: CC BY 4.0, https://creativecommons.org/licenses/by/4.0/
+Copernicus DEM data: https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM
+Copernicus WorldDEM-90 includes data © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018; provided under COPERNICUS by the European Union and ESA; all rights reserved.
+Android geoid model: https://android.googlesource.com/platform/frameworks/base/+/0240f9a6f69f/core/res/geoid_height_map_assets/

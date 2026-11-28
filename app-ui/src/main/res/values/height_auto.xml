@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="point_height_auto">Automatic height for this point</string>
+    <string name="point_height_surface_desc">Source: Copernicus DEM GLO-90 (about 90 m grid). This is an estimated surface height; it may include buildings or trees and cannot determine a floor.</string>
+    <string name="point_height_network_notice">Height lookup uses a saved result for this point first. Otherwise, tapping Look up or Start sends the target coordinates to Open-Meteo.</string>
+    <string name="point_height_result">Surface above mean sea level: %1$.1f m\nWGS84 ellipsoid height used: %2$.1f m\nAutomatic fluctuation limit: ±%3$.1f m</string>
+    <string name="point_height_cached">Using a cached estimate for this target.</string>
+    <string name="point_height_loading">Looking up the target height…</string>
+    <string name="point_height_unavailable">Target height unavailable. Retry or turn off automatic height to enter it manually.</string>
+    <string name="point_height_retry">Retry height lookup</string>
+    <string name="point_height_preview">Look up height only</string>
+    <string name="point_height_start">Get height and start</string>
+</resources>

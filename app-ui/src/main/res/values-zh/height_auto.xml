@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="point_height_auto">按目标位置自动选高度</string>
+    <string name="point_height_surface_desc">来源：Copernicus DEM GLO-90（约 90 米网格）。这是地表估计值，可能包含建筑或树冠，不能判断楼层。</string>
+    <string name="point_height_network_notice">查询或开始时，先用该点已缓存的高度；没有缓存才把目标坐标发送给 Open-Meteo。</string>
+    <string name="point_height_result">地表海拔（平均海平面）：%1$.1f 米\n采用的 WGS84 椭球高：%2$.1f 米\n当前档位自动浮动上限：±%3$.1f 米</string>
+    <string name="point_height_cached">使用该目标的缓存估计值。</string>
+    <string name="point_height_loading">正在查询目标高度…</string>
+    <string name="point_height_unavailable">未能获取该点高度。请重试，或关闭自动高度后手动填写。</string>
+    <string name="point_height_retry">重新查高度</string>
+    <string name="point_height_preview">只查询高度</string>
+    <string name="point_height_start">获取高度并开始</string>
+</resources>

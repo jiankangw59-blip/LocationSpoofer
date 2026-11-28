@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vincenthzr.locationspoofer.ui.R
+import com.vincenthzr.locationspoofer.data.model.PointHeightUi
 import com.vincenthzr.locationspoofer.data.model.AppState
 import com.vincenthzr.locationspoofer.data.model.SearchMode
 import com.vincenthzr.locationspoofer.ui.components.AppMapController
@@ -79,6 +80,8 @@ import com.vincenthzr.locationspoofer.viewmodel.removeSavedLocation
 import com.vincenthzr.locationspoofer.viewmodel.saveCurrentLocation
 import com.vincenthzr.locationspoofer.viewmodel.selectCollectedRoute
 import com.vincenthzr.locationspoofer.viewmodel.selectCollectedLocation
+import com.vincenthzr.locationspoofer.viewmodel.previewPointHeight
+import com.vincenthzr.locationspoofer.viewmodel.setPointHeightAutomatic
 import com.vincenthzr.locationspoofer.viewmodel.setAltitude
 import com.vincenthzr.locationspoofer.viewmodel.setAltitudeVariation
 import com.vincenthzr.locationspoofer.viewmodel.setMapEngine
@@ -101,6 +104,11 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import com.vincenthzr.locationspoofer.ui.screen.tabs.location.*
 import java.util.Locale
+
+internal data class PointHeightAction(val target: Pair<String, String>, val startWhenReady: Boolean) {
+    fun mayStart(currentTarget: Pair<String, String>, automatic: Boolean, dialogOpen: Boolean, height: PointHeightUi): Boolean =
+        startWhenReady && dialogOpen && automatic && target == currentTarget && height is PointHeightUi.Ready
+}
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -546,13 +554,38 @@ fun LocationTab(
     }
 
     if (spoofingUiState.showStartSpoofingDialog) {
+        val target = uiState.latitudeInput to uiState.longitudeInput
+        // No lookup on map movement, recomposition, or opening the dialog. Only a button may send the point.
+        var heightRequest by remember(target, uiState.pointHeightAutomatic) { mutableStateOf<PointHeightAction?>(null) }
+        LaunchedEffect(target, uiState.pointHeightAutomatic, heightRequest) {
+            val action = heightRequest ?: return@LaunchedEffect
+            if (!uiState.pointHeightAutomatic) return@LaunchedEffect
+            viewModel.previewPointHeight()
+            val current = viewModel.uiState.value
+            heightRequest = null
+            if (action.mayStart(
+                    current.latitudeInput to current.longitudeInput, current.pointHeightAutomatic,
+                    viewModel.spoofingUiState.value.showStartSpoofingDialog, current.pointHeightForCurrentTarget
+                )) {
+                viewModel.startSpoofing()
+                onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false))
+            }
+        }
         StartSpoofingDialog(
             uiState = uiState,
             isDark = isDark,
             onDismiss = { onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false)) },
+            heightPreview = if (heightRequest != null) PointHeightUi.Loading
+                else uiState.pointHeightForCurrentTarget.takeUnless { it === PointHeightUi.Loading } ?: PointHeightUi.Idle,
+            onAutomaticHeightChange = viewModel::setPointHeightAutomatic,
+            onPreviewHeight = { if (heightRequest == null) heightRequest = PointHeightAction(target, startWhenReady = false) },
             onConfirm = {
-                viewModel.startSpoofing()
-                onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false))
+                if (uiState.pointHeightAutomatic) {
+                    if (heightRequest == null) heightRequest = PointHeightAction(target, startWhenReady = true)
+                } else {
+                    viewModel.startSpoofing()
+                    onIntent(SpoofingIntent.SetStartSpoofingDialogVisible(false))
+                }
             },
             onToggleWifi = viewModel::toggleMockWifi,
             onToggleCell = viewModel::toggleMockCell,

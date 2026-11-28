@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import com.vincenthzr.locationspoofer.utils.AltitudeModel
+import com.vincenthzr.locationspoofer.utils.MotionRealism
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -15,6 +16,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vincenthzr.locationspoofer.data.model.PointHeightUi
 import com.vincenthzr.locationspoofer.data.model.AppState
 import com.vincenthzr.locationspoofer.ui.R
 import com.vincenthzr.locationspoofer.ui.theme.AccentBlue
@@ -28,6 +30,9 @@ fun StartSpoofingDialog(
     isDark: Boolean,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
+    heightPreview: PointHeightUi,
+    onAutomaticHeightChange: (Boolean) -> Unit,
+    onPreviewHeight: () -> Unit,
     onToggleWifi: () -> Unit,
     onToggleCell: () -> Unit,
     onToggleBluetooth: () -> Unit,
@@ -202,13 +207,50 @@ fun StartSpoofingDialog(
                     }
 
                     Spacer(Modifier.height(8.dp))
-                    AltitudeSettingsCard(
-                        altitudeInput = uiState.altitudeInput,
-                        variationM = uiState.altitudeVariationM,
-                        stationaryLevelId = uiState.realismLevel,
-                        onAltitudeChange = onAltitudeChange,
-                        onVariationChange = onAltitudeVariationChange
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(stringResource(R.string.point_height_auto), modifier = Modifier.weight(1f))
+                        Switch(checked = uiState.pointHeightAutomatic, onCheckedChange = onAutomaticHeightChange)
+                    }
+                    if (uiState.pointHeightAutomatic) {
+                        Text(
+                            stringResource(R.string.point_height_surface_desc),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        when (heightPreview) {
+                            PointHeightUi.Idle -> Unit
+                            PointHeightUi.Loading -> Text(stringResource(R.string.point_height_loading))
+                            PointHeightUi.Unavailable -> Text(
+                                stringResource(R.string.point_height_unavailable),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            is PointHeightUi.Ready -> {
+                                Text(stringResource(R.string.point_height_result,
+                                    heightPreview.surfaceMslMeters, heightPreview.ellipsoidMeters,
+                                    MotionRealism.Level.fromId(uiState.realismLevel).altitudeAmplitudeM))
+                                if (heightPreview.fromCache) Text(
+                                    stringResource(R.string.point_height_cached),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        if (heightPreview == PointHeightUi.Idle || heightPreview == PointHeightUi.Unavailable) {
+                            TextButton(onClick = onPreviewHeight) {
+                                Text(stringResource(if (heightPreview == PointHeightUi.Unavailable)
+                                    R.string.point_height_retry else R.string.point_height_preview))
+                            }
+                        }
+                    } else {
+                        AltitudeSettingsCard(
+                            altitudeInput = uiState.altitudeInput,
+                            variationM = uiState.altitudeVariationM,
+                            stationaryLevelId = uiState.realismLevel,
+                            onAltitudeChange = onAltitudeChange,
+                            onVariationChange = onAltitudeVariationChange
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     androidx.compose.material3.OutlinedTextField(
                         value = uiState.satelliteCountInput,
@@ -226,7 +268,15 @@ fun StartSpoofingDialog(
                     )
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
+                if (uiState.pointHeightAutomatic) {
+                    Text(
+                        stringResource(R.string.point_height_network_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
@@ -237,11 +287,13 @@ fun StartSpoofingDialog(
                     Spacer(Modifier.width(8.dp))
                     Button(
                         onClick = onConfirm,
-                        enabled = AltitudeModel.parseBaseMeters(uiState.altitudeInput) != null,
+                        enabled = if (uiState.pointHeightAutomatic) heightPreview != PointHeightUi.Loading
+                        else AltitudeModel.parseBaseMeters(uiState.altitudeInput) != null,
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
                     ) {
-                        Text(stringResource(R.string.start_simulation))
+                        Text(stringResource(if (uiState.pointHeightAutomatic && heightPreview !is PointHeightUi.Ready)
+                            R.string.point_height_start else R.string.start_simulation))
                     }
                 }
             }

@@ -42,6 +42,11 @@ internal fun MainViewModel.startSpoofing() {
         try {
             _uiState.update { it.copy(isSavingConfig = true) }
 
+            val automaticHeight = state.pointHeightAutomatic
+            val pointHeight = if (automaticHeight) resolvePointHeight(lat, lng) ?: run {
+                if (configurationTargetMatches(lat, lng) && _uiState.value.pointHeightAutomatic) notifyPointHeightUnavailable()
+                return@launch
+            } else null
             val lookup = beginLocationLookup(lat, lng, state.mockWifi, state.mockCell, explicitlyStarted = true)
             val queryWifi = state.mockWifi && !hasLocalWifiWithin50m(lat, lng)
             if (queryWifi) fetchRemoteWifiSync(lat, lng, lookup)
@@ -51,7 +56,7 @@ internal fun MainViewModel.startSpoofing() {
             evaluateMockCapabilitiesSuspend(lat, lng)
             finishLocationLookup(lookup, state.mockWifi && !queryWifi, state.mockCell && !queryCells)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (!configurationTargetMatches(lat, lng)) return@launch
+            if (!configurationTargetMatches(lat, lng) || _uiState.value.pointHeightAutomatic != automaticHeight) return@launch
 
             val updatedState = _uiState.value
             var desiredCommitted = false
@@ -68,6 +73,7 @@ internal fun MainViewModel.startSpoofing() {
                 updatedState.mockCell,
                 updatedState.mockBluetooth && updatedState.canMockBluetooth,
                 updatedState.enableJitter,
+                pointEllipsoidMeters = pointHeight?.ellipsoidMeters,
                 selectedPoi = selectedPoiAddress,
                 onDesiredCommitted = {
                     settingsRepository.lastSpoofedLat = lat.toString()

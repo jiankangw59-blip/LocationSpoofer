@@ -166,6 +166,10 @@ class SettingsRepository(private val settingsManager: SettingsManager) {
             settingsManager.restartAppsOnSpoof = value
         }
 
+    var pointHeightAutomatic: Boolean
+        get() = settingsManager.pointHeightAutomatic
+        set(value) { settingsManager.pointHeightAutomatic = value }
+
     var altitude: String
         get() = settingsManager.altitude
         set(value) {

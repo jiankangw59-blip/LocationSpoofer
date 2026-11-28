@@ -164,6 +164,9 @@ data class AppState(
     val mockBluetooth: Boolean = true,
     val enableJitter: Boolean = true,
     val restartAppsOnSpoof: Boolean = true,
+    val pointHeightAutomatic: Boolean = true,
+    val pointHeight: PointHeightUi = PointHeightUi.Idle,
+    val pointHeightKey: String? = null,
     val altitudeInput: String = "0.0",
     val altitudeVariationM: Int = AltitudeModel.DEFAULT_VARIATION_M,
     val satelliteCountInput: String = "20",
@@ -177,4 +180,12 @@ data class AppState(
 
     // 是否接收测试版更新 (Beta 通道)
     val checkBetaUpdates: Boolean = false
-)
+) {
+    val pointHeightForCurrentTarget: PointHeightUi
+        get() {
+            val key = pointHeightKey ?: return PointHeightUi.Idle
+            if (!pointHeightAutomatic || pointHeight === PointHeightUi.Idle) return PointHeightUi.Idle
+            return if (pointHeightTarget(latitudeInput.toDoubleOrNull(), longitudeInput.toDoubleOrNull())?.key == key)
+                pointHeight else PointHeightUi.Idle
+        }
+}

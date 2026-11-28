@@ -101,6 +101,11 @@ class SystemFilesInstrumentation : Instrumentation() {
     }
 
     override fun onStart() {
+        if (lookupArguments?.getString("check") == "point-elevation-source") {
+            val output = checkPointElevationSource()
+            finish(if (output.getString("result") == "PASS") -1 else 0, output)
+            return
+        }
         if (lookupArguments?.getString("check") == "wigle-profile-tls") {
             val output = diagnoseWigleProfileTls(lookupArguments?.getString("http1") == "true")
             finish(if (output.getString("result") == "COMPLETE") -1 else 0, output)

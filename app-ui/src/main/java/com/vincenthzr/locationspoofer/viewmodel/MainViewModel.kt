@@ -54,6 +54,11 @@ class MainViewModel(
     internal var gaitRecordingJob: Job? = null
     internal var mockCapabilitiesJob: Job? = null
     internal var environmentUpdateJob: Job? = null
+    internal var pointHeightRequest = 0L
+    internal val pointHeightMutex = kotlinx.coroutines.sync.Mutex()
+    internal val pointHeightCache by lazy {
+        com.vincenthzr.locationspoofer.data.elevation.PointHeightCache(java.io.File(context.cacheDir, "point-surface-glo90-v1"))
+    }
     internal var pointConfigurationJob: Job? = null
     internal var draggingPointConfigurationJob: Job? = null
     internal var selectedPoiAddress: SelectedPoiAddress? = null
@@ -104,6 +109,7 @@ class MainViewModel(
             mockBluetooth = settingsRepository.mockBluetooth,
             enableJitter = settingsRepository.enableJitter,
             restartAppsOnSpoof = settingsRepository.restartAppsOnSpoof,
+            pointHeightAutomatic = settingsRepository.pointHeightAutomatic,
             altitudeInput = settingsRepository.altitude,
             altitudeVariationM = settingsRepository.altitudeVariationM,
             satelliteCountInput = settingsRepository.satelliteCount,

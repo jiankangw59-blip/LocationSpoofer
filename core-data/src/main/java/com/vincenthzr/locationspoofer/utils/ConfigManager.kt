@@ -71,6 +71,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         selectedPoi: SelectedPoiAddress? = null,
         reuseNearbyAddress: Boolean = active && simMode != "STILL",
         startingMotion: StartingMotion? = null,
+        pointEllipsoidMeters: Double? = null,
         onDesiredCommitted: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val addressContext = currentCoroutineContext()
@@ -98,7 +99,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
             put("mock_cell", mockCell)
             put("mock_bluetooth", mockBluetooth)
             put("enable_jitter", enableJitter)
-            put("altitude", altitude)
+            PointHeightBinding.assign(this, altitude, pointEllipsoidMeters)
             put("satellite_count", satelliteCount)
             put("enable_step_simulation", enableStepSimulation)
             put("step_cadence_spm", stepCadenceSpm)
@@ -131,6 +132,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
             val base = lastJson ?: return@withLock false
             val json = JSONObject(base.toString())
             mutate(json)
+            PointHeightBinding.reconcilePatch(json) { AltitudeModel.parseBaseMeters(settingsManager.altitude) ?: 0.0 }
             putPersistentSettings(json)
             writeLocked(json)
         }
@@ -170,6 +172,12 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
     }
 
     fun putEnvironment(json: JSONObject, wifiJson: String, cellJson: String, bluetoothJson: String) {
+        putWifi(json, wifiJson)
+        json.put("cell_json", JSONArray(cellJson))
+        json.put("bluetooth_json", JSONArray(bluetoothJson))
+    }
+
+    internal fun putWifi(json: JSONObject, wifiJson: String) {
         val wifiObj = try {
             JSONObject(wifiJson)
         } catch (e: Exception) {
@@ -180,8 +188,6 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
             }
         }
         json.put("wifi_json", wifiObj)
-        json.put("cell_json", JSONArray(cellJson))
-        json.put("bluetooth_json", JSONArray(bluetoothJson))
     }
 
     /** 独立于每次模拟会话的常驻设置项，调用方不逐层透传，每次发布时直接读取最新值 */
@@ -201,7 +207,7 @@ class ConfigManager(private val context: Context, private val rootManager: RootM
         json.put("realism_level", realismLevel)
         json.put("speed_fluctuation_pct", speedFluctuation)
         json.put("gait_template", if (settingsManager.useGaitTemplate) settingsManager.gaitTemplate else "")
-        json.put("altitude_variation_m", settingsManager.altitudeVariationM)
+        json.put("altitude_variation_m", PointHeightBinding.variationMeters(json, realismLevel, settingsManager.altitudeVariationM))
     }
 
     private fun reverseGeocode(point: CoordinateUtils.LatLng): PositionAddress? {

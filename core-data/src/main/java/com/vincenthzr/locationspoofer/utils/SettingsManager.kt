@@ -132,6 +132,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("restart_apps_on_spoof", true)
         set(value) = prefs.edit().putBoolean("restart_apps_on_spoof", value).apply()
 
+    var pointHeightAutomatic: Boolean
+        get() = prefs.getBoolean("point_height_automatic", true)
+        set(value) = prefs.edit().putBoolean("point_height_automatic", value).apply()
+
     var altitude: String
         get() = prefs.getString("altitude", "0.0") ?: "0.0"
         set(value) {

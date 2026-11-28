@@ -17,6 +17,7 @@ import com.vincenthzr.locationspoofer.utils.LSPosedManager
 import com.vincenthzr.locationspoofer.utils.RootManager
 import com.vincenthzr.locationspoofer.utils.SelectedPoiAddress
 import com.vincenthzr.locationspoofer.utils.AltitudeModel
+import com.vincenthzr.locationspoofer.utils.PointHeightBinding
 import com.vincenthzr.locationspoofer.utils.SettingsManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -39,6 +40,10 @@ class LocationRepository(
             RootSolution.AUTO
         }
 
+    /** Read the committed session, never the pending choice in the editing UI. No terrain lookup. */
+    fun activePointUsesAutomaticHeight(): Boolean =
+        PointHeightBinding.isBound(configManager.lastConfigSnapshot())
+
     suspend fun checkRootAccess(): Boolean = rootManager.checkRootAccess(currentRootSolution())
 
     /** 检测 Root 权限与框架配置通道是否正常，返回完整诊断结果供设置页"测试"按钮展示 */
@@ -57,10 +62,10 @@ class LocationRepository(
         val hasRoot = rootManager.checkRootAccess(currentRootSolution())
 
         if (settingsManager.isSpoofingActive) {
-            val lastLat = settingsManager.lastSpoofedLat.toDoubleOrNull() ?: 0.0
-            val lastLng = settingsManager.lastSpoofedLng.toDoubleOrNull() ?: 0.0
-            if (lastLat != 0.0 && lastLng != 0.0) {
-                val stored = configManager.lastConfigSnapshot()
+            val lastLat = settingsManager.lastSpoofedLat.toDoubleOrNull()
+            val lastLng = settingsManager.lastSpoofedLng.toDoubleOrNull()
+            val stored = configManager.lastConfigSnapshot()
+            if (lastLat != null && lastLng != null && PointHeightBinding.canRestorePosition(stored, lastLat, lastLng)) {
                 val routePoints = mutableListOf<RoutePoint>()
                 stored?.optJSONArray("route_points")?.let { points ->
                     for (index in 0 until points.length()) {
@@ -95,7 +100,8 @@ class LocationRepository(
                     stopAtDestination = stored?.optBoolean("stop_at_destination", false) ?: false,
                     enableStepSimulation = stored?.optBoolean("enable_step_simulation", true) ?: true,
                     stepCadenceSpm = stored?.optInt("step_cadence_spm", 165) ?: 165,
-                    isAutoCadence = stored?.optBoolean("is_auto_cadence", true) ?: true
+                    isAutoCadence = stored?.optBoolean("is_auto_cadence", true) ?: true,
+                    pointEllipsoidMeters = PointHeightBinding.restoredMeters(stored, lastLat, lastLng)
                 )
             }
         } else if (spoofingServiceController.isRunning) {
@@ -130,6 +136,7 @@ class LocationRepository(
         stepCadenceSpm: Int = 165,
         isAutoCadence: Boolean = true,
         selectedPoi: SelectedPoiAddress? = null,
+        pointEllipsoidMeters: Double? = null,
         onDesiredCommitted: (() -> Unit)? = null,
         onAcceptedStart: (() -> Unit)? = null
     ) {
@@ -169,6 +176,7 @@ class LocationRepository(
             isAutoCadence,
             selectedPoi,
             startingMotion = startingMotion,
+            pointEllipsoidMeters = pointEllipsoidMeters,
             onDesiredCommitted = {
                 SpoofingState.isActive = true
                 SpoofingState.realismLevel = startingMotion.realismLevel
@@ -291,6 +299,7 @@ class LocationRepository(
         isAutoCadence: Boolean = true,
         selectedPoi: SelectedPoiAddress? = null,
         reuseNearbyAddress: Boolean = simMode != "STILL",
+        pointEllipsoidMeters: Double? = null,
         onDesiredCommitted: (() -> Unit)? = null,
         onAcceptedPosition: (() -> Unit)? = null
     ) {
@@ -322,6 +331,7 @@ class LocationRepository(
             isAutoCadence,
             selectedPoi,
             reuseNearbyAddress,
+            pointEllipsoidMeters = pointEllipsoidMeters,
             onDesiredCommitted = {
                 updatePositionState(lat, lng, simMode, simBearing, startTime, routePoints, isRouteMode,
                     wifiJson, cellJson, bluetoothJson, enableJitter)
@@ -357,23 +367,10 @@ class LocationRepository(
         SpoofingState.enableJitter = enableJitter
     }
 
+    @Suppress("UNUSED_PARAMETER") // Keep the old call signature; Wi-Fi refresh must not rewrite position or settings.
     suspend fun updateWifiJson(wifiJson: String, appCoordinateSystems: Map<String, String>) {
         SpoofingState.wifiJson = wifiJson
-        // 同步写入配置文件,确保Xposed端能读取到WiFi数据
-        configManager.saveConfig(
-            SpoofingState.latitude,
-            SpoofingState.longitude,
-            SpoofingState.isActive,
-            SpoofingState.simMode,
-            SpoofingState.simBearing,
-            startTimestamp = SpoofingState.startTimestamp,
-            wifiJson = wifiJson,
-            appCoordinateSystems = appCoordinateSystems,
-            cellJson = SpoofingState.cellJson,
-            bluetoothJson = SpoofingState.bluetoothJson,
-            altitude = AltitudeModel.parseBaseMeters(settingsManager.altitude) ?: 0.0,
-            satelliteCount = settingsManager.satelliteCount.toIntOrNull() ?: 10
-        )
+        configManager.patchConfig { configManager.putWifi(it, wifiJson) }
     }
 
     private fun routePointsToJson(points: List<RoutePoint>): String {

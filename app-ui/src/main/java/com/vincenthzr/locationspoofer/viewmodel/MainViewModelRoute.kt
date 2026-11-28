@@ -139,6 +139,14 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
     if (samePoint && pointConfigurationJob?.isActive == true) return
     if (state.isSpoofingActive) {
         pointConfigurationJob = viewModelScope.launch {
+            // Only a point session explicitly started with terrain lookup may send a new target.
+            // Do not publish intermediate drag points with the old point's height.
+            val automaticHeight = state.pointHeightAutomatic && locationRepository.activePointUsesAutomaticHeight()
+            if (automaticHeight && isDragging) return@launch
+            val pointHeight = if (automaticHeight) resolvePointHeight(lat, lng) ?: run {
+                if (configurationTargetMatches(lat, lng) && _uiState.value.pointHeightAutomatic) notifyPointHeightUnavailable()
+                return@launch
+            } else null
             val lookup = if (isDragging) null else beginLocationLookup(lat, lng, state.mockWifi, state.mockCell)
             val queryWifi = !isDragging && state.mockWifi && !hasLocalWifiWithin50m(lat, lng)
             if (queryWifi) fetchRemoteWifiSync(lat, lng, lookup)
@@ -146,7 +154,8 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
             if (queryCells) fetchRemoteCellsSync(lat, lng, lookup)
             evaluateMockCapabilitiesSuspend(lat, lng)
             finishLocationLookup(lookup, state.mockWifi && !queryWifi, state.mockCell && !queryCells)
-            if (!settingsRepository.isSpoofingActive || !configurationTargetMatches(lat, lng)) return@launch
+            if (!settingsRepository.isSpoofingActive || !configurationTargetMatches(lat, lng) ||
+                _uiState.value.pointHeightAutomatic != state.pointHeightAutomatic) return@launch
             val updatedState = _uiState.value
             locationRepository.updateConfig(
                 lat = lat,
@@ -164,6 +173,7 @@ internal fun MainViewModel.confirmMapPoint(lat: Double, lng: Double, isDragging:
                 mockCell = updatedState.mockCell,
                 mockBluetooth = updatedState.mockBluetooth && updatedState.canMockBluetooth,
                 enableJitter = updatedState.enableJitter,
+                pointEllipsoidMeters = pointHeight?.ellipsoidMeters,
                 selectedPoi = selectedPoiAddress.takeUnless { isDragging },
                 reuseNearbyAddress = isDragging,
                 onDesiredCommitted = {

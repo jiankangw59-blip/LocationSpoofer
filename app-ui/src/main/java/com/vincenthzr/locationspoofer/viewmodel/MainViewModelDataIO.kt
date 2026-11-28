@@ -497,6 +497,7 @@ internal fun MainViewModel.exportEnvironmentData(
                     mockCell = settingsRepository.mockCell,
                     mockBluetooth = settingsRepository.mockBluetooth,
                     enableJitter = settingsRepository.enableJitter,
+                    pointHeightAutomatic = settingsRepository.pointHeightAutomatic,
                     altitude = settingsRepository.altitude,
                     altitudeVariationM = settingsRepository.altitudeVariationM,
                     satelliteCount = settingsRepository.satelliteCount,
@@ -684,6 +685,7 @@ internal fun MainViewModel.applyImportPackage(
                     settingsRepository.mockBluetooth = s.mockBluetooth
                     settingsRepository.enableJitter = s.enableJitter
                     if (s.altitude.isNotBlank()) settingsRepository.altitude = s.altitude
+                    s.pointHeightAutomatic?.let { settingsRepository.pointHeightAutomatic = it }
                     s.altitudeVariationM?.let { settingsRepository.altitudeVariationM = it }
                     if (s.satelliteCount.isNotBlank()) settingsRepository.satelliteCount = s.satelliteCount
                     if (s.mapType.isNotBlank()) settingsRepository.setMapType(s.mapType)
@@ -713,6 +715,9 @@ internal fun MainViewModel.applyImportPackage(
                     mockCell = settingsRepository.mockCell,
                     mockBluetooth = settingsRepository.mockBluetooth,
                     enableJitter = settingsRepository.enableJitter,
+                    pointHeightAutomatic = settingsRepository.pointHeightAutomatic,
+                    pointHeight = com.vincenthzr.locationspoofer.data.model.PointHeightUi.Idle,
+                    pointHeightKey = null,
                     altitudeInput = settingsRepository.altitude.ifBlank { it.altitudeInput },
                     altitudeVariationM = settingsRepository.altitudeVariationM,
                     satelliteCountInput = settingsRepository.satelliteCount.ifBlank { it.satelliteCountInput },
